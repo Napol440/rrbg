@@ -62,7 +62,7 @@ export function startGame(room) {
   room.deck = makeDeck(board.targets);
   room.deckPos = 0;
   room.round = 0;
-  room.robotTemplate = board.robots.map(({ id, color }) => ({ id, color, x: 0, y: 0 }));
+  room.robotTemplate = board.robots.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' }));
   room.scores = Object.fromEntries(room.players.map((p) => [p.id, 0]));
   return beginRound(room);
 }
@@ -186,6 +186,7 @@ function scatter(room) {
       taken.add(`${x},${y}`);
       r.x = x;
       r.y = y;
+      r.dir = 'up';
       break;
     }
   }

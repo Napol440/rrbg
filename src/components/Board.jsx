@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ROBOT_FILL, ROBOT_DARK } from './colors.js';
+import { ROCKET_IMG, dirAngle } from './rockets.js';
 
 // SVG board: 16×16 cells, walls as thick edge lines, targets as shape tokens,
 // robots as sliding tokens (CSS-transform transition = slide animation).
@@ -96,23 +97,37 @@ export default function Board({ walls, robots, targets, activeTarget, selectedId
         <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} className="wall" />
       ))}
       <rect x={1} y={1} width={W - 2} height={W - 2} className="border" />
-      {/* robots */}
-      {robots.map((r) => (
-        <g
-          key={r.id}
-          className={`robot ${r.id === selected?.id ? 'sel' : ''}`}
-          style={{ transform: `translate(${r.x * CELL + CELL / 2}px, ${r.y * CELL + CELL / 2}px)` }}
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect?.(r.id);
-          }}
-        >
-          <circle r={14} fill={ROBOT_FILL[r.color]} stroke={ROBOT_DARK[r.color]} strokeWidth={3} />
-          <text y={5} textAnchor="middle" className="robot-label">
-            {r.color[0].toUpperCase()}
-          </text>
-        </g>
-      ))}
+      {/* robots as rocket sprites (dot fallback for colours without art) */}
+      {robots.map((r) => {
+        const img = ROCKET_IMG[r.color];
+        const isSel = r.id === selected?.id;
+        return (
+          <g
+            key={r.id}
+            className={`robot ${isSel ? 'sel' : ''}`}
+            style={{ transform: `translate(${r.x * CELL + CELL / 2}px, ${r.y * CELL + CELL / 2}px) rotate(${dirAngle(r.dir)}deg)` }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect?.(r.id);
+            }}
+          >
+            <title>{r.color} rocket</title>
+            {img ? (
+              <>
+                {isSel && <circle r={16} className="sel-ring" />}
+                <image href={img} x={-11} y={-17} width={22} height={34} preserveAspectRatio="xMidYMid meet" />
+              </>
+            ) : (
+              <>
+                <circle r={14} fill={ROBOT_FILL[r.color]} stroke={ROBOT_DARK[r.color]} strokeWidth={3} />
+                <text y={5} textAnchor="middle" className="robot-label">
+                  {r.color[0].toUpperCase()}
+                </text>
+              </>
+            )}
+          </g>
+        );
+      })}
       {disabled && <rect x={0} y={0} width={W} height={W} fill="transparent" />}
     </svg>
   );

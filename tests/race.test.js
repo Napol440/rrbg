@@ -26,8 +26,8 @@ test('isOptimalSolve needs a known par', () => {
 
 const WALLS = new Set(['6,2:W']);
 const START = [
-  { id: 'r0', color: 'red', x: 0, y: 2 },
-  { id: 'r1', color: 'silver', x: 10, y: 10 },
+  { id: 'r0', color: 'red', x: 0, y: 2, dir: 'up' },
+  { id: 'r1', color: 'silver', x: 10, y: 10, dir: 'up' },
 ];
 const TARGET = { id: 't0', x: 5, y: 2, color: 'red', shape: 'circle' };
 
@@ -247,4 +247,16 @@ test('interleaved robots do not cancel', () => {
   s = move(s, 'r1', 'up'); // r1 returns, but last entry is r0 → counts
   assert.equal(s.sandboxes.p0.movesUsed, 3);
   assert.equal(s.sandboxes.p0.history.length, 3);
+});
+
+// ─── facing direction tracking (rocket nose follows last travel dir) ───
+
+test('MOVE records facing dir; RESET restores up', () => {
+  let s = craftState(null);
+  assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r1').dir, 'up');
+  s = move(s, 'r1', 'down');
+  assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r1').dir, 'down');
+  assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r0').dir, 'up');
+  s = gameReducer(s, { type: 'RESET' });
+  assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r1').dir, 'up');
 });

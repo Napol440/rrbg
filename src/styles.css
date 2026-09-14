@@ -39,6 +39,7 @@ body {
 .board .robot { cursor: pointer; transition: transform 0.16s ease-out; }
 .board .robot circle { filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); }
 .board .robot.sel circle { stroke: #111; stroke-width: 4; }
+.board .robot.sel circle.sel-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 5 3; filter: none; }
 .board .robot-label { fill: #fff; font-weight: 700; font-size: 15px; pointer-events: none; }
 
 /* ── panels ── */

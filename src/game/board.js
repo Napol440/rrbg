@@ -169,7 +169,7 @@ export function buildBoard({ seed, robotCount = 4, randomExtraWalls = false } = 
   }
 
   const colors = robotCount === 5 ? ROBOT_COLORS_5 : ROBOT_COLORS;
-  const robots = colors.map((color, i) => ({ id: `r${i}`, color, x: 0, y: 0 }));
+  const robots = colors.map((color, i) => ({ id: `r${i}`, color, x: 0, y: 0, dir: 'up' }));
   return { walls, targets, robots, seed: useSeed };
 }
 

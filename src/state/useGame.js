@@ -73,6 +73,7 @@ function dealTarget(state) {
       taken.add(k);
       r.x = x;
       r.y = y;
+      r.dir = 'up'; // fresh round: rockets face up until moved
       break;
     }
   }
@@ -121,7 +122,7 @@ export function gameReducer(s, a) {
       const r = slide(s.walls, box.robots, a.robotId, a.dir);
       if (!r.moved) return { ...s, illegal: { robotId: a.robotId, n: (s.illegal?.n ?? 0) + 1 } };
       const prev = snapshot(box.robots);
-      const robots = box.robots.map((q) => (q.id === a.robotId ? { ...q, x: r.x, y: r.y } : q));
+      const robots = box.robots.map((q) => (q.id === a.robotId ? { ...q, x: r.x, y: r.y, dir: a.dir } : q));
       // Immediate reverse: the same robot sliding back onto its pre-last-move
       // cell cancels the pair (no net move) instead of counting a new one.
       const lastEntry = box.history[box.history.length - 1];
