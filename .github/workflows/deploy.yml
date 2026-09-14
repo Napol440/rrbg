@@ -17,6 +17,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Point the static site at a public rooms server:
+    # repo Settings → Secrets and variables → Actions → Variables → VITE_ROOM_WS
+    # e.g. wss://rrbg-rooms.onrender.com/ws (see render.yaml). Unset = same-host.
+    env:
+      VITE_ROOM_WS: ${{ vars.VITE_ROOM_WS }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -70,7 +70,7 @@ export default function App() {
         try { m = JSON.parse(ev.data); } catch { return; }
         routeServerMessage(m, dispatch, setNetError);
       };
-      ws.onerror = () => { onErr?.(); setNetError('Could not reach the rooms server. Run `npm run server`.'); };
+      ws.onerror = () => { onErr?.(); setNetError(`Could not reach ${roomWsUrl()}. Is the rooms server running? (npm run server, keep it open)`); };
       ws.onclose = () => dispatch({ type: 'NET_CLOSE' });
       ws.onopen = () => ws.send(JSON.stringify(firstMsg));
     } catch {

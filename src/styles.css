@@ -28,15 +28,17 @@ body {
 }
 
 /* ── board ── */
-.board { width: 100%; height: auto; background: #f2f0e8; border-radius: 8px; touch-action: manipulation; }
-.board .cell { fill: #f2f0e8; }
-.board .cell.vault { fill: #3a3f47; }
-.board .gridline line { stroke: #d5d0c0; stroke-width: 1; }
-.board .wall { stroke: #22262c; stroke-width: 5; stroke-linecap: square; }
-.board .border { fill: none; stroke: #22262c; stroke-width: 3; }
+.board { width: 100%; height: auto; background-color: #0b0e1a; background-size: cover; background-position: center; border-radius: 8px; touch-action: manipulation; }
+.board .cell { fill: rgba(8, 10, 18, 0.45); }
+.board .cell.vault { fill: transparent; }
+.board .gridline line { stroke: rgba(255, 255, 255, 0.16); stroke-width: 1; }
+.board .border { fill: none; stroke: #8b93a7; stroke-width: 3; }
 .board .active-ring { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 6 3; animation: dash 1s linear infinite; }
 @keyframes dash { to { stroke-dashoffset: -9; } }
 .board .robot { cursor: pointer; transition: transform 0.16s ease-out; }
+.board .robot image { filter: brightness(1.22) saturate(1.4); }
+.board .laser { filter: brightness(1.35) saturate(1.3) drop-shadow(0 0 3px rgba(255, 80, 80, 0.9)); }
+.board .target-active { filter: brightness(1.35) saturate(1.3) drop-shadow(0 0 6px rgba(255, 255, 255, 0.9)); }
 .board .robot circle { filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); }
 .board .robot.sel circle { stroke: #111; stroke-width: 4; }
 .board .robot.sel circle.sel-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 5 3; filter: none; }

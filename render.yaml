@@ -1,0 +1,11 @@
+# One-click rooms hosting on Render's free tier (app + wss rooms, one service).
+# Dashboard alternative: New → Web Service → select this repo,
+#   Build: npm ci && npm run build | Start: npm start  (PORT is auto-provided).
+services:
+  - type: web
+    name: rrbg-rooms
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /

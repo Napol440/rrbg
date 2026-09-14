@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ROBOT_FILL, ROBOT_DARK } from './colors.js';
 import { ROCKET_IMG, dirAngle } from './rockets.js';
+import { laserWall, asteroidImg, spaceBg, LASER_W, LASER_H } from './theme.js';
 
-// SVG board: 16×16 cells, walls as thick edge lines, targets as shape tokens,
-// robots as sliding tokens (CSS-transform transition = slide animation).
+// SVG board: 16×16 cells over the space backdrop, laser edge walls,
+// asteroid vault, target tokens, rocket sprites (CSS-transform slide).
 const N = 16;
 const CELL = 40;
 const W = N * CELL;
@@ -24,25 +25,25 @@ function TargetGlyph({ shape, color, active, dim }) {
   return <polygon points={pts} fill={fill} stroke={stroke} strokeWidth={3} strokeLinejoin="round" {...common} />;
 }
 
-// Convert the "x,y:DIR" wall set into SVG line segments.
-function wallLines(walls) {
-  const lines = [];
+// Convert the "x,y:DIR" wall set into laser-sprite placements.
+function wallSprites(walls) {
+  const segs = [];
   for (const w of walls) {
     const [cell, dir] = w.split(':');
     const [x, y] = cell.split(',').map(Number);
-    const x0 = x * CELL;
-    const y0 = y * CELL;
-    if (dir === 'N') lines.push([x0, y0, x0 + CELL, y0]);
-    else if (dir === 'S') lines.push([x0, y0 + CELL, x0 + CELL, y0 + CELL]);
-    else if (dir === 'W') lines.push([x0, y0, x0, y0 + CELL]);
-    else if (dir === 'E') lines.push([x0 + CELL, y0, x0 + CELL, y0 + CELL]);
+    if (dir === 'N') segs.push({ mx: (x + 0.5) * CELL, my: y * CELL, vertical: false });
+    else if (dir === 'S') segs.push({ mx: (x + 0.5) * CELL, my: (y + 1) * CELL, vertical: false });
+    else if (dir === 'W') segs.push({ mx: x * CELL, my: (y + 0.5) * CELL, vertical: true });
+    else if (dir === 'E') segs.push({ mx: (x + 1) * CELL, my: (y + 0.5) * CELL, vertical: true });
   }
-  return lines;
+  return segs;
 }
+
+const VAULT = 7 * CELL; // center 2×2 block origin (80×80 units)
 
 export default function Board({ walls, robots, targets, activeTarget, selectedId, onSelect, onMove, onCellAim, disabled, illegal }) {
   const [shake, setShake] = useState(0);
-  const lines = useMemo(() => wallLines(walls), [walls]);
+  const segs = useMemo(() => wallSprites(walls), [walls]);
 
   // Replay a shake animation whenever an illegal slide is rejected.
   useEffect(() => {
@@ -57,6 +58,7 @@ export default function Board({ walls, robots, targets, activeTarget, selectedId
       viewBox={`0 0 ${W} ${W}`}
       role="grid"
       aria-label="Ricochet Robots board"
+      style={{ backgroundImage: `url(${spaceBg})` }}
       key={shake /* remount to retrigger shake via CSS */}
     >
       {/* cells */}
@@ -83,18 +85,26 @@ export default function Board({ walls, robots, targets, activeTarget, selectedId
           <line x1={0} y1={i * CELL} x2={W} y2={i * CELL} />
         </g>
       ))}
-      {/* target tokens printed on the board */}
-      {targets.map((t) => (
-        <g key={t.id} transform={`translate(${t.x * CELL},${t.y * CELL})`} opacity={activeTarget && t.id !== activeTarget.id ? 0.45 : 1}>
+      {/* center-vault asteroid over the 2×2 block */}
+      <image href={asteroidImg} x={VAULT - 2} y={VAULT - 2} width={84} height={84} preserveAspectRatio="xMidYMid meet" />
+      {/* active target only — the round's objective, glowing */}
+      {targets.filter((t) => !activeTarget || t.id === activeTarget.id).map((t) => (
+        <g key={t.id} className="target-active" transform={`translate(${t.x * CELL},${t.y * CELL})`}>
           <TargetGlyph shape={t.shape} color={t.color} />
           {activeTarget && t.id === activeTarget.id && (
             <rect x={2} y={2} width={CELL - 4} height={CELL - 4} className="active-ring" />
           )}
         </g>
       ))}
-      {/* walls as thick edge lines */}
-      {lines.map(([x1, y1, x2, y2], i) => (
-        <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} className="wall" />
+      {/* walls as laser segments on the cell edges */}
+      {segs.map((sg, i) => (
+        sg.vertical ? (
+          <g key={i} transform={`translate(${sg.mx},${sg.my}) rotate(90)`}>
+            <image className="laser" href={laserWall} x={-LASER_W / 2} y={-LASER_H / 2} width={LASER_W} height={LASER_H} preserveAspectRatio="xMidYMid meet" />
+          </g>
+        ) : (
+          <image key={i} className="laser" href={laserWall} x={sg.mx - LASER_W / 2} y={sg.my - LASER_H / 2} width={LASER_W} height={LASER_H} preserveAspectRatio="xMidYMid meet" />
+        )
       ))}
       <rect x={1} y={1} width={W - 2} height={W - 2} className="border" />
       {/* robots as rocket sprites (dot fallback for colours without art) */}
