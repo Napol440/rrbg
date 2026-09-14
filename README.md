@@ -1,4 +1,4 @@
-# Ricochet Robots — race mode + online rooms (React + Vite)
+# Rocket Rebound — race mode + online rooms (React + Vite)
 
 1–6 players, hot-seat or online. No account; rooms are 4-letter codes on a tiny Node server.
 
@@ -19,7 +19,7 @@ npm start        # serve dist/ + rooms on one port (PORT env, default 8787)
 
 ## How a round works
 
-1. **Target revealed** — the matching-colour robot must reach the pulsing token.
+1. **Target revealed** — the matching-colour robot must reach the pulsing token. Rounds are re-dealt until the puzzle genuinely needs 6+ moves (or is beyond solver search).
 2. **Thinking (unlimited, sandbox)** — everyone experiments on a **private board copy**: moves count live, **Reset** restores the round start, all free. Sidebar shows every player's live count.
 3. **Race** — the first *validated* solve starts the **60s clock**; all players see `"<name> solved in N"`. A strictly **smaller** solve restarts the clock and steals the lead. A provably **optimal** solve (≤ solver par) wins **instantly** ⚡.
 4. **Solved → point**, next target. Winner: most targets after N rounds, or first to X points.

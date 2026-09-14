@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import {
-  createRoom, joinRoom, startGame, roundPayload,
+  createRoom, joinRoom, startGame, roundPayload, removePlayer, updateConfig,
   applyCount, applySolution, applyGiveUp, tickRoom, nextRound,
 } from './rooms.js';
 
@@ -107,6 +107,25 @@ function handle(ws, m) {
       else broadcast(room, ev); // ROUND payload
       break;
     }
+    case 'CONFIG': {
+      // Host tunes timer/rounds/robots/chaos while still in the lobby.
+      const room = rooms.get(ws.roomCode);
+      if (!room || ws.playerId !== room.hostId || room.phase !== 'lobby') return;
+      updateConfig(room, m.cfg);
+      broadcast(room, lobbyPayload(room));
+      break;
+    }
+    case 'KICK': {
+      const room = rooms.get(ws.roomCode);
+      if (!room || ws.playerId !== room.hostId) return;
+      const target = room.conns.get(m.playerId);
+      if (!target || m.playerId === room.hostId) return;
+      send(target, { t: 'KICKED' });
+      try { target.close(); } catch { /* already gone */ }
+      if (removePlayer(room, m.playerId)) rooms.delete(room.code);
+      else broadcast(room, lobbyPayload(room));
+      break;
+    }
     case 'COUNT': {
       const room = rooms.get(ws.roomCode);
       if (!room || !ws.playerId) return;
@@ -151,14 +170,12 @@ function send(ws, msg) {
 function leaveRoom(ws) {
   const room = rooms.get(ws.roomCode);
   if (!room) return;
-  room.conns.delete(ws.playerId);
-  room.players = room.players.filter((p) => p.id !== ws.playerId);
-  delete room.presence[ws.playerId];
-  if (room.players.length === 0) {
+  // Already removed (e.g. kicked) → nothing to do.
+  if (!room.conns.has(ws.playerId) && !room.players.some((p) => p.id === ws.playerId)) return;
+  if (removePlayer(room, ws.playerId)) {
     rooms.delete(room.code);
     return;
   }
-  if (room.hostId === ws.playerId) room.hostId = room.players[0].id;
   if (room.phase === 'lobby') broadcast(room, lobbyPayload(room));
   else {
     // Mid-game leave: keep playing; refresh presence + host view.
@@ -181,6 +198,9 @@ function lobbyFields(room) {
     hostId: room.hostId,
     roundsTotal: room.config.roundsTotal,
     robotCount: room.config.robotCount,
+    targetCount: room.config.targetCount ?? 1,
+    raceSeconds: room.config.raceSeconds,
+    chaos: room.config.chaos,
   };
 }
 

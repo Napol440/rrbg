@@ -41,7 +41,7 @@ function wallSprites(walls) {
 
 const VAULT = 7 * CELL; // center 2×2 block origin (80×80 units)
 
-export default function Board({ walls, robots, targets, activeTarget, selectedId, onSelect, onMove, onCellAim, disabled, illegal }) {
+export default function Board({ walls, robots, targets, activeTargets, selectedId, onSelect, onMove, onCellAim, disabled, illegal }) {
   const [shake, setShake] = useState(0);
   const segs = useMemo(() => wallSprites(walls), [walls]);
 
@@ -57,7 +57,7 @@ export default function Board({ walls, robots, targets, activeTarget, selectedId
       className="board"
       viewBox={`0 0 ${W} ${W}`}
       role="grid"
-      aria-label="Ricochet Robots board"
+      aria-label="Rocket Rebound board"
       style={{ backgroundImage: `url(${spaceBg})` }}
       key={shake /* remount to retrigger shake via CSS */}
     >
@@ -85,15 +85,13 @@ export default function Board({ walls, robots, targets, activeTarget, selectedId
           <line x1={0} y1={i * CELL} x2={W} y2={i * CELL} />
         </g>
       ))}
-      {/* center-vault asteroid over the 2×2 block */}
-      <image href={asteroidImg} x={VAULT - 2} y={VAULT - 2} width={84} height={84} preserveAspectRatio="xMidYMid meet" />
-      {/* active target only — the round's objective, glowing */}
-      {targets.filter((t) => !activeTarget || t.id === activeTarget.id).map((t) => (
+      {/* center-vault asteroid over the 2×2 block (1.3× for presence) */}
+      <image href={asteroidImg} x={VAULT - 14.6} y={VAULT - 14.6} width={109.2} height={109.2} preserveAspectRatio="xMidYMid meet" />
+      {/* active targets only — the round's objectives, glowing */}
+      {targets.filter((t) => !activeTargets || activeTargets.some((a) => a.id === t.id)).map((t) => (
         <g key={t.id} className="target-active" transform={`translate(${t.x * CELL},${t.y * CELL})`}>
           <TargetGlyph shape={t.shape} color={t.color} />
-          {activeTarget && t.id === activeTarget.id && (
-            <rect x={2} y={2} width={CELL - 4} height={CELL - 4} className="active-ring" />
-          )}
+          <rect x={2} y={2} width={CELL - 4} height={CELL - 4} className="active-ring" />
         </g>
       ))}
       {/* walls as laser segments on the cell edges */}

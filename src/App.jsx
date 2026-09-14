@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useGame, activeTarget, playerColor, visibleRobots } from './state/useGame.js';
-import { isSolved } from './game/engine.js';
+import { useGame, activeTargets, playerColor, visibleRobots } from './state/useGame.js';
+import { isMultiSolved } from './game/engine.js';
 import SetupScreen from './components/SetupScreen.jsx';
 import Lobby from './components/Lobby.jsx';
 import Board from './components/Board.jsx';
@@ -57,9 +57,9 @@ export default function App() {
     const box = state.sandboxes[you];
     if (!box || state.phase === 'setup' || state.phase === 'reveal' || state.phase === 'gameOver') return;
     if (state.solutionSent === box.movesUsed) return;
-    const target = activeTarget(state);
-    if (!target) return;
-    if (isSolved(box.robots, target)) {
+    const targets = activeTargets(state);
+    if (!targets.length) return;
+    if (isMultiSolved(box.robots, targets)) {
       send({ t: 'SOLUTION', moves: box.history.map((h) => ({ robotId: h.robotId, dir: h.dir })) });
       dispatch({ type: 'NET_SENT', moves: box.movesUsed });
     }
@@ -77,7 +77,7 @@ export default function App() {
       ws.onmessage = (ev) => {
         let m;
         try { m = JSON.parse(ev.data); } catch { return; }
-        routeServerMessage(m, dispatch, setNetError);
+        routeServerMessage(m, dispatch, setNetError, () => wsRef.current?.close());
       };
       ws.onerror = () => { onErr?.(); setNetError(`Could not reach ${roomWsUrl()}. Is the rooms server running? (npm run server, keep it open)`); };
       ws.onclose = () => dispatch({ type: 'NET_CLOSE' });
@@ -108,6 +108,43 @@ export default function App() {
     [play, selectedId, robots, state],
   );
 
+  const giveUp = useCallback(() => {
+    if (state.mode === 'net') send({ t: 'GIVE_UP' });
+    dispatch({ type: 'GIVE_UP' });
+  }, [state.mode, send, dispatch]);
+
+  // Global hotkeys (single listener — the source of truth for keys):
+  // arrows/WASD move · 1-5 select rocket · U undo · R reset · G give up.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (state.phase !== 'thinking' && state.phase !== 'race') return;
+      const tag = e.target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const map = {
+        ArrowUp: 'up', w: 'up', W: 'up',
+        ArrowDown: 'down', s: 'down', S: 'down',
+        ArrowLeft: 'left', a: 'left', A: 'left',
+        ArrowRight: 'right', d: 'right', D: 'right',
+      };
+      const dir = map[e.key];
+      if (dir) {
+        e.preventDefault();
+        play(dir);
+        return;
+      }
+      if (e.key >= '1' && e.key <= '5') {
+        const bot = robots[+e.key - 1];
+        if (bot) setSelectedId(bot.id);
+        return;
+      }
+      if (e.key === 'u' || e.key === 'U') dispatch({ type: 'UNDO' });
+      else if (e.key === 'r' || e.key === 'R') dispatch({ type: 'RESET' });
+      else if (e.key === 'g' || e.key === 'G') giveUp();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [state.phase, play, robots, giveUp, dispatch]);
+
   if (state.phase === 'setup' && state.mode === 'local') {
     return (
       <div className="wrap narrow">
@@ -125,7 +162,7 @@ export default function App() {
     return (
       <div className="wrap narrow">
         {netError && <p className="neterr">{netError}</p>}
-        <Lobby state={state} send={netAction} onLeave={() => { wsRef.current?.close(); dispatch({ type: 'QUIT' }); }} />
+        <Lobby key={state.net?.code} state={state} send={netAction} onLeave={() => { wsRef.current?.close(); dispatch({ type: 'QUIT' }); }} />
       </div>
     );
   }
@@ -152,14 +189,14 @@ export default function App() {
     );
   }
 
-  const target = activeTarget(state);
+  const targets = activeTargets(state);
   const sel = robots.find((r) => r.id === selectedId) ?? robots[0];
   const playable = canPlay(state);
 
   return (
     <div className="wrap">
       <header className="topbar">
-        <b>Ricochet Robots</b>
+        <b>Rocket Rebound</b>
         <span className="muted">
           {state.mode === 'net' ? `room ${state.net?.code} · you are ${state.players.find((p) => p.id === state.net?.you)?.name ?? ''} · ` : 'hot-seat · '}
           round {state.round}/{state.roundsTotal}
@@ -174,7 +211,7 @@ export default function App() {
             walls={state.walls}
             robots={robots}
             targets={state.targets}
-            activeTarget={target}
+            activeTargets={targets}
             selectedId={sel?.id}
             onSelect={setSelectedId}
             onCellAim={onCellAim}
@@ -184,12 +221,10 @@ export default function App() {
             onMove={play}
             onUndo={() => dispatch({ type: 'UNDO' })}
             onReset={() => dispatch({ type: 'RESET' })}
-            onGiveUp={() => {
-              if (state.mode === 'net') send({ t: 'GIVE_UP' });
-              dispatch({ type: 'GIVE_UP' });
-            }}
+            onGiveUp={giveUp}
             canPlay={playable}
             selectedColor={sel?.color}
+            robotCount={robots.length}
           />
         </div>
         <Sidebar state={state} dispatch={dispatch} send={netAction} />
@@ -198,19 +233,19 @@ export default function App() {
   );
 }
 
-function routeServerMessage(m, dispatch, setNetError) {
+function routeServerMessage(m, dispatch, setNetError, onKicked) {
   switch (m.t) {
     case 'WELCOME':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount });
       break;
     case 'LOBBY':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount });
       break;
     case 'ROUND':
       dispatch({ type: 'NET_ROUND', ...m });
       break;
     case 'RACE':
-      dispatch({ type: 'NET_RACE', leaderId: m.leaderId, bestMoves: m.bestMoves, timeLeft: m.timeLeft });
+      dispatch({ type: 'NET_RACE', leaderId: m.leaderId, bestMoves: m.bestMoves, timeLeft: m.timeLeft, total: m.total });
       break;
     case 'TICK':
       dispatch({ type: 'NET_TICK', timeLeft: m.timeLeft });
@@ -226,6 +261,11 @@ function routeServerMessage(m, dispatch, setNetError) {
       break;
     case 'ERROR':
       setNetError(m.message);
+      break;
+    case 'KICKED':
+      onKicked?.();
+      dispatch({ type: 'QUIT' });
+      setNetError('Removed from the room by the host.');
       break;
     default:
       break;

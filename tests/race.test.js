@@ -2,10 +2,10 @@
 // rooms-server round/race logic. Run with: npm test (node --test tests/).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RACE_SECONDS, isBetterSolve, isOptimalSolve, validateSolution } from '../src/game/race.js';
-import { isSolved, solvePath } from '../src/game/engine.js';
-import { gameReducer, initialState } from '../src/state/useGame.js';
-import { createRoom, joinRoom, tickRoom, applySolution, applyGiveUp } from '../server/rooms.js';
+import { RACE_SECONDS, isBetterSolve, isOptimalSolve, validateSolution, meetsMinPar, MIN_ROUND_PAR } from '../src/game/race.js';
+import { isSolved, isMultiSolved, solvePath } from '../src/game/engine.js';
+import { gameReducer, initialState, activeTargets } from '../src/state/useGame.js';
+import { createRoom, joinRoom, tickRoom, applySolution, applyGiveUp, updateConfig, removePlayer } from '../server/rooms.js';
 
 // ─── helpers ───
 
@@ -20,6 +20,15 @@ test('isOptimalSolve needs a known par', () => {
   assert.equal(isOptimalSolve(3, 5), true);
   assert.equal(isOptimalSolve(6, 5), false);
   assert.equal(isOptimalSolve(1, null), false);
+});
+
+test('deal gate: rounds must need 6+ moves (unknown counts as hard)', () => {
+  assert.equal(MIN_ROUND_PAR, 6);
+  assert.equal(meetsMinPar(null), true);
+  assert.equal(meetsMinPar(9), true);
+  assert.equal(meetsMinPar(6), true);
+  assert.equal(meetsMinPar(5), false);
+  assert.equal(meetsMinPar(1), false);
 });
 
 // ─── validateSolution ───
@@ -384,4 +393,186 @@ test('server give-up-all attaches a validating answer', () => {
     validateSolution(room.walls, room.startRobots, TARGET, ev.answer),
     { ok: true, moves: 1 },
   );
+});
+
+// ─── last solver standing wins ───
+
+function raceLedByP0() {
+  // p0 solves in 3 (par unknown) → race, clock running.
+  let s = craftState(null);
+  s = move(s, 'r1', 'down');
+  s = move(s, 'r1', 'up');
+  s = move(s, 'r0', 'right');
+  assert.equal(s.phase, 'race');
+  return s;
+}
+
+test('leader wins immediately when all rivals give up', () => {
+  let s = raceLedByP0();
+  s = gameReducer(s, { type: 'GIVE_UP', playerId: 'p1' });
+  assert.equal(s.phase, 'reveal');
+  assert.deepEqual([s.lastResult.winnerId, s.lastResult.movesUsed], ['p0', 3]);
+  assert.equal(s.scores.p0, 1);
+});
+
+test('race continues while a rival is still in (even if leader gives up)', () => {
+  let s = raceLedByP0();
+  s = gameReducer(s, { type: 'VIEW_AS', playerId: 'p0' });
+  s = gameReducer(s, { type: 'GIVE_UP', playerId: 'p0' }); // leader bows out
+  assert.equal(s.phase, 'race'); // p1 still experimenting
+  assert.equal(s.race.leaderId, 'p0');
+});
+
+test('server ends the race when all rivals give up', () => {
+  const room = createRoom('Ada', {});
+  const { player } = joinRoom(room, 'Bob');
+  room.walls = new Set(WALLS);
+  room.targets = [TARGET];
+  room.deck = [0];
+  room.deckPos = 0;
+  room.startRobots = START.map((r) => ({ ...r }));
+  room.robotTemplate = START.map((r) => ({ ...r }));
+  room.round = 1;
+  room.phase = 'thinking';
+  room.par = null;
+  room.presence = {
+    p0: { movesUsed: 0, solved: false, best: null, givenUp: false },
+    [player.id]: { movesUsed: 0, solved: false, best: null, givenUp: false },
+  };
+  const first = applySolution(room, 'p0', [
+    { robotId: 'r1', dir: 'down' },
+    { robotId: 'r1', dir: 'up' },
+    { robotId: 'r0', dir: 'right' },
+  ]);
+  assert.equal(first.type, 'race');
+  const ev = applyGiveUp(room, player.id);
+  assert.equal(ev.type, 'end');
+  assert.equal(ev.winnerId, 'p0');
+  assert.equal(room.scores.p0, 1);
+});
+
+// ─── lobby: tunable config, kick, timer plumbing ───
+
+test('room config defaults and clamps', () => {
+  const room = createRoom('Ada', {});
+  assert.equal(room.config.raceSeconds, 60);
+  const cfg = updateConfig(room, { raceSeconds: 5, roundsTotal: 99, robotCount: 5, chaos: 1 });
+  assert.deepEqual([cfg.raceSeconds, cfg.roundsTotal, cfg.robotCount, cfg.chaos], [10, 40, 5, true]);
+  assert.equal(room.config.raceSeconds, 10);
+});
+
+test('race clock uses the room timer setting', () => {
+  const room = createRoom('Ada', { raceSeconds: 25 });
+  room.walls = new Set(WALLS);
+  room.targets = [TARGET];
+  room.deck = [0];
+  room.deckPos = 0;
+  room.startRobots = START.map((r) => ({ ...r }));
+  room.robotTemplate = START.map((r) => ({ ...r }));
+  room.round = 1;
+  room.phase = 'thinking';
+  room.par = null;
+  room.presence = { p0: { movesUsed: 0, solved: false, best: null, givenUp: false } };
+  const ev = applySolution(room, 'p0', [{ robotId: 'r0', dir: 'right' }]);
+  assert.equal(ev.type, 'race');
+  assert.deepEqual([ev.race.timeLeft, ev.race.total], [25, 25]);
+});
+
+test('removePlayer drops seats and promotes a new host', () => {
+  const room = createRoom('Ada', {});
+  const { player: bob } = joinRoom(room, 'Bob');
+  room.conns.set('p0', {});
+  room.conns.set(bob.id, {});
+  assert.equal(removePlayer(room, bob.id), false);
+  assert.deepEqual(room.players.map((p) => p.id), ['p0']);
+  assert.equal(room.hostId, 'p0');
+  joinRoom(room, 'Cid'); // gets p2 — seat ids keep incrementing
+  assert.equal(removePlayer(room, 'p0'), false);
+  assert.equal(room.hostId, 'p2'); // crown passes to the oldest remaining seat
+  assert.equal(removePlayer(room, 'p2'), true); // empty
+});
+
+test('client stores lobby timer + host, race carries its total', () => {
+  let s = gameReducer(initialState(), {
+    type: 'NET_LOBBY', code: 'ABCD', you: 'p1', isHost: false, hostId: 'p0',
+    players: [{ id: 'p0', name: 'Ada' }, { id: 'p1', name: 'Bob' }],
+    roundsTotal: 10, robotCount: 5, raceSeconds: 30, chaos: true,
+  });
+  assert.equal(s.raceSeconds, 30);
+  assert.equal(s.net.hostId, 'p0');
+  assert.equal(s.robotCount, 5);
+  s = gameReducer(s, { type: 'NET_RACE', leaderId: 'p0', bestMoves: 7, timeLeft: 29, total: 30 });
+  assert.deepEqual([s.race.timeLeft, s.race.total], [29, 30]);
+  s = gameReducer(s, { type: 'NET_TICK', timeLeft: 28 });
+  assert.deepEqual([s.race.timeLeft, s.race.total], [28, 30]);
+});
+
+// ─── multiple targets ───
+
+const TARGET2 = { id: 't1', x: 10, y: 15, color: 'silver', shape: 'hex' };
+
+function craftMulti() {
+  const s = craftState(null);
+  return { ...s, targetCount: 2, targets: [TARGET, TARGET2], deck: [0, 1], par: null };
+}
+
+test('isMultiSolved needs every target covered', () => {
+  const both = [
+    { id: 'r0', color: 'red', x: 5, y: 2 },
+    { id: 'r1', color: 'silver', x: 10, y: 15 },
+  ];
+  assert.equal(isMultiSolved(both, [TARGET, TARGET2]), true);
+  assert.equal(isMultiSolved([both[0], START[1]], [TARGET, TARGET2]), false);
+  assert.equal(isMultiSolved(both, []), false);
+});
+
+test('round solves only when all active targets are covered', () => {
+  let s = craftMulti();
+  s = move(s, 'r0', 'right'); // red home, silver still out
+  assert.equal(s.phase, 'thinking');
+  assert.equal(s.roster.p0.solved, false);
+  s = move(s, 'r1', 'down'); // silver home too → solved in 2
+  assert.equal(s.phase, 'race');
+  assert.deepEqual([s.race.leaderId, s.race.bestMoves], ['p0', 2]);
+});
+
+test('activeTargets slices consecutive deck entries', () => {
+  const s = {
+    ...craftState(null),
+    targetCount: 2,
+    targets: [TARGET, TARGET2, TARGET],
+    deck: [0, 1, 2],
+    deckPos: 1,
+  };
+  assert.deepEqual(activeTargets(s).map((t) => t.id), ['t1', 't0']);
+});
+
+test('deck advances by target count each round', () => {
+  const dummies = Array.from({ length: 6 }, (_, i) => ({ id: `t${i}`, x: i, y: 0, color: 'red', shape: 'circle' }));
+  let s = { ...craftState(null), phase: 'reveal', targetCount: 2, targets: dummies, deck: [0, 1, 2, 3, 4, 5], deckPos: 0, round: 1 };
+  s = gameReducer(s, { type: 'NEXT_ROUND' });
+  assert.equal(s.deckPos, 2);
+  assert.deepEqual(activeTargets(s).map((t) => t.id), ['t2', 't3']);
+});
+
+test('server validates multi-target lines with no par', () => {
+  const room = createRoom('Ada', { targetCount: 2 });
+  room.walls = new Set(WALLS);
+  room.targets = [TARGET, TARGET2];
+  room.deck = [0, 1];
+  room.deckPos = 0;
+  room.startRobots = START.map((r) => ({ ...r }));
+  room.robotTemplate = START.map((r) => ({ ...r }));
+  room.round = 1;
+  room.phase = 'thinking';
+  room.par = null;
+  room.presence = { p0: { movesUsed: 0, solved: false, best: null, givenUp: false } };
+  const partial = applySolution(room, 'p0', [{ robotId: 'r0', dir: 'right' }]);
+  assert.equal(partial.type, 'rejected');
+  const full = applySolution(room, 'p0', [
+    { robotId: 'r0', dir: 'right' },
+    { robotId: 'r1', dir: 'down' },
+  ]);
+  assert.equal(full.type, 'race');
+  assert.equal(full.race.bestMoves, 2);
 });

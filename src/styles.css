@@ -67,6 +67,55 @@ body {
 .netbox h2 { margin: 0; font-size: 15px; }
 .neterr { color: #ff9a9a; background: #3a1d1d; border: 1px solid #7a2e2e; border-radius: 8px; padding: 8px 12px; }
 .lobby-code { font-family: monospace; letter-spacing: 2px; background: #0f1216; padding: 2px 10px; border-radius: 6px; }
+
+/* ── in-game HUD (topbar, side cards, controls) ── */
+.topbar { border-bottom: 1px solid rgba(0, 229, 255, 0.35); padding-bottom: 10px; }
+.topbar > b:first-child { letter-spacing: 3px; text-transform: uppercase; font-size: 15px; color: #7df9ff; text-shadow: 0 0 10px rgba(0, 229, 255, 0.8); }
+.side .card {
+  background: linear-gradient(165deg, rgba(8, 20, 34, 0.94), rgba(14, 10, 32, 0.94));
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.08);
+}
+.side .card h2 { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: #7df9ff; text-shadow: 0 0 8px rgba(0, 229, 255, 0.6); }
+.controls {
+  background: linear-gradient(165deg, rgba(8, 20, 34, 0.94), rgba(14, 10, 32, 0.94));
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.08);
+}
+
+/* ── neon command-deck HUD (lobby + setup panels) ── */
+.hud-wrap { filter: drop-shadow(0 0 14px rgba(0, 229, 255, 0.22)); margin: 4px 0 8px; }
+.hud {
+  background: linear-gradient(165deg, rgba(8, 20, 34, 0.97), rgba(14, 10, 32, 0.97));
+  border: 1px solid rgba(0, 229, 255, 0.5);
+  clip-path: polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px);
+  padding: 18px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hud-title { margin: 0; font-size: 13px; letter-spacing: 4px; text-transform: uppercase; color: #7df9ff; text-shadow: 0 0 10px rgba(0, 229, 255, 0.8); }
+.hud-sub { margin: 6px 0 0; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+.hud-code { font-family: monospace; font-size: 40px; letter-spacing: 10px; color: #e8fdff; text-shadow: 0 0 16px rgba(0, 229, 255, 0.9); line-height: 1; }
+.hud-roster { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.hud-row { display: flex; align-items: center; gap: 8px; background: rgba(0, 229, 255, 0.06); border: 1px solid rgba(0, 229, 255, 0.25); padding: 6px 10px; }
+.hud-name { font-weight: 600; }
+.hud-kick { margin-left: 0; padding: 2px 8px; font-size: 12px; background: transparent; border: 1px solid rgba(229, 72, 77, 0.7); color: #ff9a9a; border-radius: 4px; cursor: pointer; }
+.hud-kick:hover { background: rgba(229, 72, 77, 0.25); box-shadow: 0 0 8px rgba(229, 72, 77, 0.6); }
+.hud-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.hud-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.hud-grid input, .hud-grid select { background: rgba(0, 20, 30, 0.8); border: 1px solid rgba(0, 229, 255, 0.4); color: var(--text); }
+.hud-grid input:focus, .hud-grid select:focus { outline: none; border-color: #00e5ff; box-shadow: 0 0 8px rgba(0, 229, 255, 0.5); }
+.hud-grid .check { flex-direction: row; align-items: center; gap: 8px; }
+.hud-btn { letter-spacing: 2px; text-transform: uppercase; font-weight: 700; border: 1px solid rgba(0, 229, 255, 0.6); background: transparent; color: #7df9ff; }
+.hud-btn:hover:not(:disabled) { background: rgba(0, 229, 255, 0.18); box-shadow: 0 0 12px rgba(0, 229, 255, 0.5); }
+.hud-btn.primary { background: rgba(0, 229, 255, 0.22); border-color: #00e5ff; color: #e8fdff; }
+.hud-btn.primary:hover:not(:disabled) { background: rgba(0, 229, 255, 0.35); }
+.hud-btn.ghost { border-color: var(--line); color: var(--muted); letter-spacing: 1px; }
+@media (max-width: 600px) {
+  .hud-grid { grid-template-columns: 1fr; }
+  .hud-code { font-size: 32px; letter-spacing: 6px; }
+}
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .scores { width: 100%; border-collapse: collapse; }
 .scores td { padding: 3px 0; }
@@ -91,6 +140,7 @@ button.ghost { background: transparent; }
 .dpad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px; }
 .dpad button { font-size: 18px; }
 .cbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+.cbtns kbd { font-size: 11px; opacity: 0.7; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
 @media (max-width: 600px) {
   .dpad { grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px); }
   .names, .grid2 { grid-template-columns: 1fr; }

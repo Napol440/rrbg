@@ -88,6 +88,15 @@ export function isSolved(robots, target) {
   return !!bot && bot.x === target.x && bot.y === target.y;
 }
 
+/** Multi-target goal: EVERY active target covered simultaneously. */
+export function isMultiSolved(robots, targets) {
+  if (!targets || targets.length === 0) return false;
+  return targets.every((t) => {
+    const bot = robots.find((r) => r.color === t.color);
+    return !!bot && bot.x === t.x && bot.y === t.y;
+  });
+}
+
 // ─── Solver (BFS over joint robot positions) ────────────────────────────────
 // Used for: (a) par hints, (b) optimal instant-win threshold, (c) showing the
 // answer when everyone gives up. Branching is ≤ 4×robots; depth/node caps

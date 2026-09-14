@@ -1,65 +1,69 @@
 import { useState } from 'react';
 import { playerColor } from '../state/useGame.js';
 
-// Player setup: 1–6 hot-seat players, round/point config, robot count.
-// Plus online rooms: create a room (share the code) or join one.
+// Entry screen: solo practice on this device, or online rooms for multiplayer.
+// (Hot-seat multiplayer was removed — every pilot gets their own screen.)
 export default function SetupScreen({ onStart, onCreate, onJoin }) {
-  const [count, setCount] = useState(2);
-  const [names, setNames] = useState(['Ada', 'Bob', 'Cid', 'Dee', 'Eli', 'Fay']);
+  const [soloName, setSoloName] = useState('Ada');
   const [roundsTotal, setRoundsTotal] = useState(15);
   const [pointsToWin, setPointsToWin] = useState(0);
   const [robotCount, setRobotCount] = useState(4);
+  const [targetCount, setTargetCount] = useState(1);
   const [chaos, setChaos] = useState(false);
   const [netName, setNetName] = useState('');
   const [joinCode, setJoinCode] = useState('');
 
-  const setName = (i, v) => setNames((n) => n.map((x, j) => (j === i ? v : x)));
-
-  const start = () => {
-    const players = Array.from({ length: count }, (_, i) => ({
-      name: names[i]?.trim() || `Player ${i + 1}`,
-      color: playerColor(i),
-    }));
-    onStart({ players, roundsTotal, pointsToWin, robotCount, chaos });
+  const startSolo = () => {
+    onStart({
+      players: [{ name: soloName.trim() || 'Solo', color: playerColor(0) }],
+      roundsTotal,
+      pointsToWin,
+      robotCount,
+      targetCount,
+      chaos,
+    });
   };
 
   return (
     <div className="setup">
-      <h1>Ricochet Robots</h1>
-      <p className="muted">Hot-seat multiplayer · 1–6 players · all state in your browser</p>
+      <h1>Rocket Rebound</h1>
+      <p className="muted">Solo practice offline · multiplayer in online rooms</p>
 
-      <label className="row">
-        <span>Players: <b>{count}</b> {count === 1 && '(solo — bidding skipped)'}</span>
-        <input type="range" min="1" max="6" value={count} onChange={(e) => setCount(+e.target.value)} />
-      </label>
-      <div className="names">
-        {Array.from({ length: count }, (_, i) => (
-          <label key={i} className="namerow">
-            <span className="dot" style={{ background: playerColor(i) }} />
-            <input value={names[i]} onChange={(e) => setName(i, e.target.value)} maxLength={12} aria-label={`Player ${i + 1} name`} />
+      <div className="hud-wrap">
+        <section className="hud">
+          <h2 className="hud-title">Solo flight</h2>
+          <label className="namerow">
+            <span>Your name</span>
+            <input value={soloName} onChange={(e) => setSoloName(e.target.value)} maxLength={12} placeholder="Ada" />
           </label>
-        ))}
+          <div className="grid2">
+            <label>Rounds (N)
+              <input type="number" min="1" max="40" value={roundsTotal} onChange={(e) => setRoundsTotal(Math.max(1, +e.target.value || 1))} />
+            </label>
+            <label>First to X points (0 = off)
+              <input type="number" min="0" max="30" value={pointsToWin} onChange={(e) => setPointsToWin(Math.max(0, +e.target.value || 0))} />
+            </label>
+            <label>Robots on board
+              <select value={robotCount} onChange={(e) => setRobotCount(+e.target.value)}>
+                <option value={4}>4 (red/blue/green/yellow)</option>
+                <option value={5}>5 (+ silver blocker)</option>
+              </select>
+            </label>
+            <label>Targets per round
+              <select value={targetCount} onChange={(e) => setTargetCount(+e.target.value)}>
+                <option value={1}>1 target</option>
+                <option value={2}>2 targets</option>
+                <option value={3}>3 targets</option>
+              </select>
+            </label>
+            <label className="check">Chaos walls
+              <input type="checkbox" checked={chaos} onChange={(e) => setChaos(e.target.checked)} />
+            </label>
+          </div>
+          <button className="hud-btn primary" onClick={startSolo}>Launch solo</button>
+        </section>
       </div>
 
-      <div className="grid2">
-        <label>Rounds (N)
-          <input type="number" min="1" max="40" value={roundsTotal} onChange={(e) => setRoundsTotal(Math.max(1, +e.target.value || 1))} />
-        </label>
-        <label>First to X points (0 = off)
-          <input type="number" min="0" max="30" value={pointsToWin} onChange={(e) => setPointsToWin(Math.max(0, +e.target.value || 0))} />
-        </label>
-        <label>Robots on board
-          <select value={robotCount} onChange={(e) => setRobotCount(+e.target.value)}>
-            <option value={4}>4 (red/blue/green/yellow)</option>
-            <option value={5}>5 (+ silver blocker)</option>
-          </select>
-        </label>
-        <label className="check">Chaos walls
-          <input type="checkbox" checked={chaos} onChange={(e) => setChaos(e.target.checked)} />
-        </label>
-      </div>
-
-      <button className="primary" onClick={start}>Start game</button>
       <details>
         <summary>How a round works</summary>
         <ol>
@@ -70,27 +74,29 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
         </ol>
       </details>
 
-      <div className="netbox">
-        <h2>Play online</h2>
-        <p className="muted">Create a room and share the 4-letter code, or join with one. Needs the rooms server (<code>npm run server</code>).</p>
-        <label className="namerow">
-          <span>Your name</span>
-          <input value={netName} onChange={(e) => setNetName(e.target.value)} maxLength={12} placeholder="Ada" />
-        </label>
-        <div className="cbtns">
-          <button className="primary" onClick={() => onCreate?.({ name: netName.trim() || 'Host', cfg: { roundsTotal, pointsToWin, robotCount, chaos } })}>
-            Create room
-          </button>
-        </div>
-        <label className="namerow">
-          <span>Room code</span>
-          <input value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} maxLength={4} placeholder="ABCD" />
-        </label>
-        <div className="cbtns">
-          <button onClick={() => joinCode.trim() && onJoin?.({ name: netName.trim() || 'Guest', code: joinCode.trim() })}>
-            Join room
-          </button>
-        </div>
+      <div className="hud-wrap">
+        <section className="hud">
+          <h2 className="hud-title">Squadron rooms</h2>
+          <p className="muted">Create a room and share the 4-letter code, or join with one. The host tunes timer, rounds, robots and walls in the lobby.</p>
+          <label className="namerow">
+            <span>Your name</span>
+            <input value={netName} onChange={(e) => setNetName(e.target.value)} maxLength={12} placeholder="Ada" />
+          </label>
+          <div className="cbtns">
+            <button className="hud-btn primary" onClick={() => onCreate?.({ name: netName.trim() || 'Host', cfg: { roundsTotal, pointsToWin, robotCount, targetCount, chaos, raceSeconds: 60 } })}>
+              Create room
+            </button>
+          </div>
+          <label className="namerow">
+            <span>Room code</span>
+            <input value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} maxLength={4} placeholder="ABCD" />
+          </label>
+          <div className="cbtns">
+            <button className="hud-btn" onClick={() => joinCode.trim() && onJoin?.({ name: netName.trim() || 'Guest', code: joinCode.trim() })}>
+              Join room
+            </button>
+          </div>
+        </section>
       </div>
     </div>
   );

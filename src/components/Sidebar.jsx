@@ -1,10 +1,11 @@
 import { RACE_SECONDS } from '../game/race.js';
-import { activeTarget, activeMovesUsed } from '../state/useGame.js';
+import { activeTargets, activeMovesUsed } from '../state/useGame.js';
 import { ROBOT_FILL } from './colors.js';
 
 // Right-hand panel: target card, sandbox meter, race clock, roster, scoreboard.
 export default function Sidebar({ state, dispatch, send }) {
-  const target = activeTarget(state);
+  const targets = activeTargets(state);
+  const multi = targets.length > 1;
   const name = (id) => state.players.find((p) => p.id === id)?.name ?? id;
   const solo = state.players.length === 1 && state.mode === 'local';
   const myMoves = activeMovesUsed(state);
@@ -13,19 +14,22 @@ export default function Sidebar({ state, dispatch, send }) {
   return (
     <aside className="side">
       <section className="card target-card">
-        <h2>Round {state.round}/{state.roundsTotal} · Target</h2>
-        {target ? (
-          <div className="targetline">
-            <span className="swatch" style={{ background: ROBOT_FILL[target.color] }} />
-            <b style={{ textTransform: 'capitalize' }}>{target.color} {target.shape}</b>
-            {state.par != null && (
-              <span className="muted"> · optimal: {state.par}</span>
-            )}
-            {state.par == null && !solo && (
-              <span className="muted"> · optimal unknown</span>
-            )}
+        <h2>Round {state.round}/{state.roundsTotal} · Target{multi ? 's — cover them all' : ''}</h2>
+        {targets.length ? targets.map((t) => (
+          <div key={t.id} className="targetline">
+            <span className="swatch" style={{ background: ROBOT_FILL[t.color] }} />
+            <b style={{ textTransform: 'capitalize' }}>{t.color} {t.shape}</b>
           </div>
-        ) : <p className="muted">No target.</p>}
+        )) : <p className="muted">No target.</p>}
+        {!multi && state.par != null && (
+          <span className="muted"> · optimal: {state.par}</span>
+        )}
+        {!multi && state.par == null && !solo && (
+          <span className="muted"> · optimal unknown</span>
+        )}
+        {multi && (
+          <span className="muted"> · multi-target: no optimal, fewest total wins</span>
+        )}
         <p className="phase">Phase: <b>{state.phase}</b></p>
       </section>
 
@@ -40,7 +44,7 @@ export default function Sidebar({ state, dispatch, send }) {
           </p>
           {state.phase === 'race' && state.race && (
             <div className="clockbar low">
-              <div className="fill" style={{ width: `${(state.race.timeLeft / RACE_SECONDS) * 100}%` }} />
+              <div className="fill" style={{ width: `${(state.race.timeLeft / (state.race.total ?? RACE_SECONDS)) * 100}%` }} />
               <span>{name(state.race.leaderId)} leads with {state.race.bestMoves} · {state.race.timeLeft}s left</span>
             </div>
           )}
