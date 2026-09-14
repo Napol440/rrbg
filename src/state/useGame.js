@@ -122,6 +122,22 @@ export function gameReducer(s, a) {
       if (!r.moved) return { ...s, illegal: { robotId: a.robotId, n: (s.illegal?.n ?? 0) + 1 } };
       const prev = snapshot(box.robots);
       const robots = box.robots.map((q) => (q.id === a.robotId ? { ...q, x: r.x, y: r.y } : q));
+      // Immediate reverse: the same robot sliding back onto its pre-last-move
+      // cell cancels the pair (no net move) instead of counting a new one.
+      const lastEntry = box.history[box.history.length - 1];
+      if (lastEntry && lastEntry.robotId === a.robotId) {
+        const before = lastEntry.prev.find((q) => q.id === a.robotId);
+        if (before && before.x === r.x && before.y === r.y) {
+          const history = box.history.slice(0, -1);
+          const movesUsed = Math.max(0, box.movesUsed - 1);
+          const sandboxes = { ...s.sandboxes, [pid]: { robots: lastEntry.prev, movesUsed, history } };
+          const roster = {
+            ...s.roster,
+            [pid]: { ...s.roster[pid], movesUsed, solved: false },
+          };
+          return { ...s, sandboxes, roster };
+        }
+      }
       const movesUsed = box.movesUsed + 1;
       // Store compact replay (robotId+dir) alongside undo snapshots.
       const history = [...box.history, { robotId: a.robotId, dir: a.dir, prev }];

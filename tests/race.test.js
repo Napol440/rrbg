@@ -206,3 +206,45 @@ test('server accepts first solve, steals on better, instant-wins optimal', () =>
   assert.equal(opt.type, 'end');
   assert.equal(opt.optimal, true);
 });
+
+// ─── immediate-reverse cancel ───
+// Corridor walls: r1 at (10,10) slides down to (10,11) and back up to exactly
+// (10,10). Without the 'N' wall the up-slide would overshoot to the edge.
+
+const CORRIDOR = new Set(['6,2:W', '10,11:S', '10,10:N']);
+
+function craftCorridor() {
+  const s = craftState(null);
+  return { ...s, walls: CORRIDOR };
+}
+
+test('forth-back with the same robot cancels the pair', () => {
+  let s = craftCorridor();
+  s = move(s, 'r1', 'down');
+  assert.deepEqual([s.sandboxes.p0.movesUsed, s.sandboxes.p0.history.length], [1, 1]);
+  s = move(s, 'r1', 'up');
+  assert.deepEqual([s.sandboxes.p0.movesUsed, s.sandboxes.p0.history.length], [0, 0]);
+  assert.deepEqual(
+    s.sandboxes.p0.robots.map((r) => [r.x, r.y]),
+    START.map((r) => [r.x, r.y]),
+  );
+  assert.equal(s.phase, 'thinking'); // no phantom solve/race
+});
+
+test('reverse that overshoots the origin counts normally', () => {
+  const s0 = craftState(null);
+  const s = { ...s0, walls: new Set(['6,2:W', '10,11:S']) }; // no N wall: up overshoots
+  let st = move(s, 'r1', 'down'); // (10,10) → (10,11)
+  st = move(st, 'r1', 'up'); // (10,11) → (10,0), NOT the origin
+  assert.equal(st.sandboxes.p0.movesUsed, 2);
+  assert.equal(st.sandboxes.p0.history.length, 2);
+});
+
+test('interleaved robots do not cancel', () => {
+  let s = craftCorridor();
+  s = move(s, 'r1', 'down'); // [1] last: r1
+  s = move(s, 'r0', 'up'); // [2] last: r0 (0,2)→(0,0)
+  s = move(s, 'r1', 'up'); // r1 returns, but last entry is r0 → counts
+  assert.equal(s.sandboxes.p0.movesUsed, 3);
+  assert.equal(s.sandboxes.p0.history.length, 3);
+});
