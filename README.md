@@ -1,34 +1,42 @@
-# Ricochet Robots — hot-seat web build (React + Vite)
+# Ricochet Robots — race mode + online rooms (React + Vite)
 
-Fully playable 1–6 player implementation. No backend; all state is client-side.
+1–6 players, hot-seat or online. No account; rooms are 4-letter codes on a tiny Node server.
 
 ## Run it
 
 ```sh
 npm install
-npm run dev      # → http://localhost:5173
-npm test         # engine validator tests (node --test)
+npm run dev      # → http://localhost:5173 (hot-seat/solo only)
+
+# Online rooms (two processes in dev):
+npm run server   # → rooms server on :8787
+npm run dev      # app talks to ws://localhost:8787/ws
+
+npm test         # engine + race + rooms tests (node --test)
 npm run build    # static dist/ for hosting
+npm start        # serve dist/ + rooms on one port (PORT env, default 8787)
 ```
 
 ## How a round works
 
 1. **Target revealed** — the matching-colour robot must reach the pulsing token.
-2. **Thinking (unlimited)** — simultaneous; solo players can freely explore the board (moves don't count).
-3. **Bidding** — anyone declares a move count. The first bid starts a **60s clock**; any strictly **lower** bid restarts it. Lowest bidder attempts first.
-4. **Attempt (60s)** — solve within the declared move count. **Undo** pops one move, **Reset** restores the round-start position — both allowed inside the budget. Fail (timeout / out-of-moves / give up) → next-lowest bidder tries the same target from a fresh board.
-5. **Solved → point**, next target. Winner: most targets after N rounds, or first to X points.
-6. **Solo (1 player)** — bidding is skipped; solve against the solver's par, tracked over N rounds.
+2. **Thinking (unlimited, sandbox)** — everyone experiments on a **private board copy**: moves count live, **Reset** restores the round start, all free. Sidebar shows every player's live count.
+3. **Race** — the first *validated* solve starts the **60s clock**; all players see `"<name> solved in N"`. A strictly **smaller** solve restarts the clock and steals the lead. A provably **optimal** solve (≤ solver par) wins **instantly** ⚡.
+4. **Solved → point**, next target. Winner: most targets after N rounds, or first to X points.
+5. **Solo (1 player)** — no race; solve against the solver's par, tracked over N rounds.
 
-## Controls
+## Online rooms
 
-- Click/tap a robot to select, then: arrow keys / WASD, on-screen D-pad, or click a cell in the same row/column to slide toward it.
-- Robots slide until a wall, the board edge, the center vault, or another robot. Zero-displacement slides are rejected.
+- **Create** a room (uses your rounds/robots settings), share the code; others **Join** with name + code. Host starts, host advances rounds.
+- The server is authoritative: board seed, round scatter, race clock, and solution validation (your move list is replayed with the real slide physics — fake solves are rejected). Clients only send move counts + claimed solutions.
+- Mid-game joiners catch up immediately. Rooms are in-memory (a server restart drops them). Solo/hot-seat works with no server.
 
 ## Code map
 
 - `src/game/engine.js` — slide physics, legal-move validator, BFS solver/par
 - `src/game/board.js` — 4 authored 8×8 quadrant tiles, mirrored/rotated/shuffled per game; target deck; robot scatter
-- `src/game/bidding.js` — 60s clocks, lowest-first ordering
-- `src/state/useGame.js` — phase machine (setup→thinking→bidding→attempt→reveal→gameOver)
-- `src/components/` — `Board.jsx` (SVG), `Sidebar.jsx`, `Controls.jsx`, `SetupScreen.jsx`
+- `src/game/race.js` — 60s race clock, better/optimal-solve predicates, shared solution validator
+- `src/state/useGame.js` — phase machine (setup→thinking→race→reveal→gameOver) + per-player sandboxes + net actions
+- `server/rooms.js` + `server/index.js` — authoritative rooms (pure logic + ws/static host)
+- `src/net/socket.js` — rooms WS endpoint helper
+- `src/components/` — `Board.jsx` (SVG), `Sidebar.jsx` (sandbox meter, race clock, roster), `Controls.jsx`, `SetupScreen.jsx` (hot-seat + create/join), `Lobby.jsx`

@@ -7,11 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/engine.test.js"
+    "server": "node server/index.js",
+    "start": "node server/index.js",
+    "test": "node --test tests/engine.test.js tests/race.test.js"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
