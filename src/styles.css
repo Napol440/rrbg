@@ -1,0 +1,88 @@
+/* Ricochet Robots — layout + board theme. Responsive: side-by-side on desktop,
+   stacked on tablet/narrow. */
+:root {
+  --bg: #14161a;
+  --panel: #1e2229;
+  --line: #2c333e;
+  --text: #e8eaf0;
+  --muted: #9aa3b2;
+  --accent: #3e8ef7;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 12px 16px 32px; }
+.wrap.narrow { max-width: 640px; }
+.topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.boardcol { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .side { order: 2; }
+}
+
+/* ── board ── */
+.board { width: 100%; height: auto; background: #f2f0e8; border-radius: 8px; touch-action: manipulation; }
+.board .cell { fill: #f2f0e8; }
+.board .cell.vault { fill: #3a3f47; }
+.board .gridline line { stroke: #d5d0c0; stroke-width: 1; }
+.board .wall { stroke: #22262c; stroke-width: 5; stroke-linecap: square; }
+.board .border { fill: none; stroke: #22262c; stroke-width: 3; }
+.board .active-ring { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 6 3; animation: dash 1s linear infinite; }
+@keyframes dash { to { stroke-dashoffset: -9; } }
+.board .robot { cursor: pointer; transition: transform 0.16s ease-out; }
+.board .robot circle { filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); }
+.board .robot.sel circle { stroke: #111; stroke-width: 4; }
+.board .robot-label { fill: #fff; font-weight: 700; font-size: 15px; pointer-events: none; }
+
+/* ── panels ── */
+.side { display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.card h2 { margin: 0 0 8px; font-size: 15px; }
+.targetline { display: flex; align-items: center; gap: 8px; }
+.swatch { width: 18px; height: 18px; border-radius: 4px; display: inline-block; }
+.phase { margin: 6px 0 0; }
+.bigmeter { font-size: 22px; margin: 4px 0; }
+.clockbar { position: relative; height: 24px; background: #0f1216; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+.clockbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 1s linear; }
+.clockbar.low .fill { background: #e5484d; }
+.clockbar span { position: relative; font-size: 12px; line-height: 24px; padding: 0 8px; }
+.bids { list-style: none; margin: 8px 0; padding: 0; }
+.bids li { padding: 2px 0; }
+.bidrow { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.bidrow input { width: 70px; }
+.bidrow.done { color: var(--muted); }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.scores { width: 100%; border-collapse: collapse; }
+.scores td { padding: 3px 0; }
+.scores td:last-child { text-align: right; }
+
+/* ── setup / controls ── */
+.setup { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+.setup h1 { margin: 0; }
+.setup .row { display: flex; flex-direction: column; gap: 6px; }
+.names { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.namerow { display: flex; align-items: center; gap: 6px; }
+.namerow input { flex: 1; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.grid2 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.check { flex-direction: row !important; align-items: center; gap: 8px; }
+input, select, button { font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: #12151a; color: var(--text); }
+button { cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+button.ghost { background: transparent; }
+.controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.dpad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px; }
+.dpad button { font-size: 18px; }
+.cbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .dpad { grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px); }
+  .names, .grid2 { grid-template-columns: 1fr; }
+}
