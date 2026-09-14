@@ -33,6 +33,14 @@ export default function App() {
     return () => clearInterval(t);
   }, [state.phase, state.mode, dispatch]);
 
+  // Answer auto-play on unsolved reveals (replays the solver's line).
+  useEffect(() => {
+    if (state.phase !== 'reveal' || !state.lastResult?.answer?.length) return;
+    if ((state.answerIdx ?? 0) >= state.lastResult.answer.length) return;
+    const t = setInterval(() => dispatch({ type: 'ANSWER_STEP' }), 450);
+    return () => clearInterval(t);
+  }, [state.phase, state.lastResult, state.answerIdx, dispatch]);
+
   // Net: report our live move count so others see it as we play.
   const myMoves = state.mode === 'net' && state.net?.you
     ? state.sandboxes[state.net.you]?.movesUsed ?? 0
@@ -41,18 +49,19 @@ export default function App() {
     if (state.mode === 'net' && state.phase !== 'setup' && myMoves != null) send({ t: 'COUNT', moves: myMoves });
   }, [state.mode, state.phase, myMoves, send]);
 
-  // Net: submit our solution once our sandbox is solved.
+  // Net: submit our solution once our sandbox is solved. Re-sends if a later
+  // solve uses a different move count (e.g. a better line after a reject).
   useEffect(() => {
     if (state.mode !== 'net' || state.net?.status !== 'playing') return;
-    if (state.solutionSent) return;
     const you = state.net.you;
     const box = state.sandboxes[you];
     if (!box || state.phase === 'setup' || state.phase === 'reveal' || state.phase === 'gameOver') return;
+    if (state.solutionSent === box.movesUsed) return;
     const target = activeTarget(state);
     if (!target) return;
     if (isSolved(box.robots, target)) {
       send({ t: 'SOLUTION', moves: box.history.map((h) => ({ robotId: h.robotId, dir: h.dir })) });
-      dispatch({ type: 'NET_SENT' });
+      dispatch({ type: 'NET_SENT', moves: box.movesUsed });
     }
   });
 

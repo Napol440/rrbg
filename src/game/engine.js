@@ -89,12 +89,21 @@ export function isSolved(robots, target) {
 }
 
 // ─── Solver (BFS over joint robot positions) ────────────────────────────────
-// Used for: (a) rejecting unsolvable deals at setup, (b) showing a "par"
-// hint in solo mode. Branching is ≤ 4×robots; depth/node caps keep it fast.
-// Returns min move count or null if not found within caps (NOT a proof of
-// unsolvability — caller should re-deal rather than loop forever).
+// Used for: (a) par hints, (b) optimal instant-win threshold, (c) showing the
+// answer when everyone gives up. Branching is ≤ 4×robots; depth/node caps
+// keep it fast. Level-by-level BFS returns the true minimum when found.
+// Returns null if not found within caps (NOT a proof of unsolvability).
 
 export function solveMinMoves(walls, robots, target, maxDepth = 9, maxNodes = 120000) {
+  const path = solvePath(walls, robots, target, maxDepth, maxNodes);
+  return path ? path.length : null;
+}
+
+/**
+ * Shortest legal move list solving the target, or null within caps.
+ * @returns {Array<{robotId:string,dir:string}>|null}
+ */
+export function solvePath(walls, robots, target, maxDepth = 9, maxNodes = 120000) {
   if (!target) return null;
   const ids = robots.map((r) => r.id);
   const startKey = ids.map((id) => {
@@ -107,12 +116,13 @@ export function solveMinMoves(walls, robots, target, maxDepth = 9, maxNodes = 12
 
   const start = robots.map((r) => ({ x: r.x, y: r.y }));
   const seen = new Set([startKey]);
-  let frontier = [start];
+  let frontier = [{ pos: start, path: [] }];
   for (let depth = 0; depth <= maxDepth; depth++) {
     const next = [];
-    for (const pos of frontier) {
+    for (const node of frontier) {
+      const { pos, path } = node;
       const asRobots = ids.map((id, i) => ({ id, x: pos[i].x, y: pos[i].y }));
-      if (pos[goalIdx].x === target.x && pos[goalIdx].y === target.y) return depth;
+      if (pos[goalIdx].x === target.x && pos[goalIdx].y === target.y) return path;
       if (depth === maxDepth) continue;
       for (let i = 0; i < ids.length; i++) {
         for (const dir of Object.keys(DIRS)) {
@@ -123,7 +133,7 @@ export function solveMinMoves(walls, robots, target, maxDepth = 9, maxNodes = 12
           if (seen.has(key)) continue;
           seen.add(key);
           if (seen.size > maxNodes) return null;
-          next.push(np);
+          next.push({ pos: np, path: [...path, { robotId: ids[i], dir }] });
         }
       }
     }

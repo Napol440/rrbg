@@ -6,6 +6,7 @@
 import { buildBoard, placeRobots, makeDeck } from '../src/game/board.js';
 import { solveMinMoves } from '../src/game/engine.js';
 import { RACE_SECONDS, isOptimalSolve, validateSolution } from '../src/game/race.js';
+import { solvePath } from '../src/game/engine.js';
 
 const PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
 
@@ -134,8 +135,12 @@ export function applyGiveUp(room, pid) {
   const all = Object.values(room.presence);
   if (all.length && all.every((r) => r.givenUp)) {
     if (room.phase === 'race' && room.race) return finishRound(room, room.race.leaderId, room.race.bestMoves, false);
+    // Nobody solved it: attach the solver's answer (null if beyond search)
+    // so clients can play it back on the board.
+    const target = room.targets[room.deck[room.deckPos % room.deck.length]];
+    const answer = solvePath(room.walls, room.startRobots, target);
     room.phase = 'reveal';
-    return { type: 'end', winnerId: null, reason: 'gave-up', scores: { ...room.scores } };
+    return { type: 'end', winnerId: null, reason: 'gave-up', scores: { ...room.scores }, answer };
   }
   return { type: 'ok' };
 }

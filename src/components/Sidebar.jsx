@@ -84,6 +84,17 @@ export default function Sidebar({ state, dispatch, send }) {
           {state.lastResult.winnerId
             ? <p><b>{name(state.lastResult.winnerId)}</b> solved it in {state.lastResult.movesUsed}!{state.lastResult.optimal && <> ⚡ <b>Optimal!</b></>}</p>
             : <p className="muted">Unsolved ({state.lastResult.reason}). No points.</p>}
+          {!state.lastResult.winnerId && (state.lastResult.answer?.length ?? 0) > 0 && (
+            <>
+              <p className="muted">Answer in {state.lastResult.answer.length}{(state.answerIdx ?? 0) < state.lastResult.answer.length ? ' — playing…' : ' — done.'}</p>
+              <div className="cbtns">
+                <button onClick={() => dispatch({ type: 'ANSWER_REPLAY' })}>↻ Replay answer</button>
+              </div>
+            </>
+          )}
+          {!state.lastResult.winnerId && !state.lastResult.answer && (
+            <p className="muted">No answer within solver search.</p>
+          )}
           {(state.mode === 'local' || state.net?.isHost) && (
             <button className="primary" onClick={() => { if (state.mode === 'net') send?.({ t: 'NEXT' }); dispatch({ type: 'NEXT_ROUND' }); }}>Next target →</button>
           )}

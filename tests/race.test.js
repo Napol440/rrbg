@@ -3,8 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RACE_SECONDS, isBetterSolve, isOptimalSolve, validateSolution } from '../src/game/race.js';
+import { isSolved, solvePath } from '../src/game/engine.js';
 import { gameReducer, initialState } from '../src/state/useGame.js';
-import { createRoom, joinRoom, tickRoom, applySolution } from '../server/rooms.js';
+import { createRoom, joinRoom, tickRoom, applySolution, applyGiveUp } from '../server/rooms.js';
 
 // ─── helpers ───
 
@@ -139,6 +140,17 @@ test('optimal solve (≤ par) wins instantly without a race', () => {
   assert.equal(s.scores.p0, 1);
 });
 
+test('non-optimal solve starts a race even when par is known', () => {
+  // par is 1 here but p0 wastes two blocker moves first → 3 moves, not optimal.
+  let s = craftState(1);
+  s = move(s, 'r1', 'down');
+  s = move(s, 'r1', 'up');
+  s = move(s, 'r0', 'right');
+  assert.equal(s.phase, 'race');
+  assert.deepEqual([s.race.leaderId, s.race.bestMoves], ['p0', 3]);
+  assert.equal(s.lastResult, null);
+});
+
 test('reset restores the round start with zero moves', () => {
   let s = craftState(null);
   s = move(s, 'r1', 'down');
@@ -183,8 +195,7 @@ test('server tick ends the race for the leader', () => {
   assert.equal(room.phase, 'reveal');
 });
 
-test('server accepts first solve, steals on better, instant-wins optimal', () => {
-  const room = createRoom('Ada', {});
+test('server accepts first solve, steals on better, instant-wins optimal', () => {  const room = createRoom('Ada', {});
   room.walls = new Set(WALLS);
   room.targets = [TARGET];
   room.deck = [0];
@@ -259,4 +270,118 @@ test('MOVE records facing dir; RESET restores up', () => {
   assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r0').dir, 'up');
   s = gameReducer(s, { type: 'RESET' });
   assert.equal(s.sandboxes.p0.robots.find((r) => r.id === 'r1').dir, 'up');
+});
+
+// ─── net solve-submit flow (regression: server must hear about solves) ───
+
+function craftNet() {
+  return {
+    ...craftState(null),
+    mode: 'net',
+    net: { code: 'ABCD', you: 'p0', isHost: true, status: 'playing', connected: true },
+  };
+}
+
+test('net solve flags solved locally WITHOUT blocking the submit', () => {
+  let s = craftNet();
+  s = move(s, 'r0', 'right'); // solves in 1, par unknown
+  assert.equal(s.phase, 'thinking'); // server owns the race — no local phase jump
+  assert.equal(s.race, null);
+  assert.equal(s.roster.p0.solved, true);
+  assert.equal(s.roster.p0.best, 1);
+  assert.equal(s.solutionSent, false); // App effect must still send SOLUTION
+  s = gameReducer(s, { type: 'NET_SENT', moves: 1 });
+  assert.equal(s.solutionSent, 1);
+});
+
+test('server presence never clears our own solved flag', () => {
+  let s = craftNet();
+  s = move(s, 'r0', 'right');
+  s = gameReducer(s, {
+    type: 'NET_PRESENCE',
+    counts: {
+      p0: { movesUsed: 1, solved: false, best: null, givenUp: false },
+      p1: { movesUsed: 4, solved: false, best: null, givenUp: false },
+    },
+  });
+  assert.equal(s.roster.p0.solved, true); // own sandbox is source of truth
+  assert.equal(s.roster.p0.best, 1);
+  assert.equal(s.roster.p1.movesUsed, 4); // opponents still update
+});
+
+// ─── answer playback ───
+
+test('solvePath returns a legal minimal line', () => {
+  const path = solvePath(WALLS, START, TARGET);
+  assert.deepEqual(path, [{ robotId: 'r0', dir: 'right' }]);
+  const open = solvePath(new Set(), [{ id: 'r0', color: 'red', x: 0, y: 0 }], { x: 15, y: 15, color: 'red' });
+  assert.equal(open.length, 2);
+  assert.deepEqual(validateSolution(new Set(), [{ id: 'r0', color: 'red', x: 0, y: 0 }], { x: 15, y: 15, color: 'red' }, open), { ok: true, moves: 2 });
+});
+
+test('everyone gave up → reveal plays the answer step by step', () => {
+  let s = craftState(null);
+  s = gameReducer(s, { type: 'GIVE_UP', playerId: 'p0' });
+  s = gameReducer(s, { type: 'GIVE_UP', playerId: 'p1' });
+  assert.equal(s.phase, 'reveal');
+  assert.equal(s.lastResult.winnerId, null);
+  assert.deepEqual(s.lastResult.answer, [{ robotId: 'r0', dir: 'right' }]);
+  assert.equal(s.answerIdx, 0);
+  // Board reset to the round origin for playback.
+  assert.deepEqual(s.sandboxes.p0.robots.map((r) => [r.x, r.y]), START.map((r) => [r.x, r.y]));
+  s = gameReducer(s, { type: 'ANSWER_STEP' });
+  assert.equal(s.answerIdx, 1);
+  assert.equal(isSolved(s.sandboxes.p0.robots, TARGET), true);
+  // Replay restores the origin and the cursor.
+  s = gameReducer(s, { type: 'ANSWER_REPLAY' });
+  assert.equal(s.answerIdx, 0);
+  assert.deepEqual(s.sandboxes.p0.robots.map((r) => [r.x, r.y]), START.map((r) => [r.x, r.y]));
+  // Stepping past the end is a no-op.
+  s = gameReducer(s, { type: 'ANSWER_STEP' });
+  s = gameReducer(s, { type: 'ANSWER_STEP' });
+  assert.equal(s.answerIdx, 1);
+});
+
+function craftSolo() {
+  const s = craftState(null);
+  return {
+    ...s,
+    players: [{ id: 'p0', name: 'Ada', color: '#e5484d' }],
+    sandboxes: { p0: s.sandboxes.p0 },
+    roster: { p0: s.roster.p0 },
+    scores: { p0: 0 },
+  };
+}
+
+test('solo give-up reveals the answer instead of skipping ahead', () => {
+  let s = craftSolo();
+  s = gameReducer(s, { type: 'GIVE_UP' });
+  assert.equal(s.phase, 'reveal');
+  assert.deepEqual(s.soloMoves, [null]);
+  assert.deepEqual(s.lastResult.answer, [{ robotId: 'r0', dir: 'right' }]);
+  s = gameReducer(s, { type: 'NEXT_ROUND' });
+  assert.equal(s.phase, 'thinking');
+  assert.equal(s.round, 2);
+});
+
+test('server give-up-all attaches a validating answer', () => {
+  const room = createRoom('Ada', {});
+  room.walls = new Set(WALLS);
+  room.targets = [TARGET];
+  room.deck = [0];
+  room.deckPos = 0;
+  room.startRobots = START.map((r) => ({ ...r }));
+  room.robotTemplate = START.map((r) => ({ ...r }));
+  room.round = 1;
+  room.phase = 'thinking';
+  room.par = 1;
+  room.presence = { p0: { movesUsed: 0, solved: false, best: null, givenUp: false } };
+  const ev = applyGiveUp(room, 'p0');
+  assert.equal(ev.type, 'end');
+  assert.equal(ev.winnerId, null);
+  assert.deepEqual(ev.answer, [{ robotId: 'r0', dir: 'right' }]);
+  assert.deepEqual(
+    validateSolution(room.walls, room.startRobots, TARGET, ev.answer),
+    { ok: true, moves: 1 },
+  );
 });

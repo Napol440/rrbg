@@ -201,7 +201,7 @@ function presencePayload(room) {
 }
 
 function endPayload(ev) {
-  return { winnerId: ev.winnerId, movesUsed: ev.movesUsed, reason: ev.reason, optimal: !!ev.optimal, scores: ev.scores };
+  return { winnerId: ev.winnerId, movesUsed: ev.movesUsed, reason: ev.reason, optimal: !!ev.optimal, scores: ev.scores, answer: ev.answer ?? null };
 }
 
 // Authoritative 1s race ticker.

@@ -12,7 +12,7 @@
 
 import { useMemo, useReducer } from 'react';
 import { buildBoard, placeRobots, makeDeck } from '../game/board.js';
-import { slide, isSolved, solveMinMoves } from '../game/engine.js';
+import { slide, isSolved, solveMinMoves, solvePath } from '../game/engine.js';
 import { RACE_SECONDS, isOptimalSolve } from '../game/race.js';
 
 const PLAYER_PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
@@ -51,8 +51,9 @@ export function initialState() {
     scores: {}, // playerId -> targets won
     soloMoves: [], // per-round move counts (solo)
     par: null, // solver optimum for active target (null = unknown)
-    lastResult: null, // {winnerId|null, movesUsed, reason, optimal}
-    solutionSent: false, // net: own solve already sent to server
+    lastResult: null, // {winnerId|null, movesUsed, reason, optimal, answer}
+    answerIdx: 0, // answer playback cursor during reveal
+    solutionSent: false, // net: move count already submitted (false = none)
     illegal: null,
   };
 }
@@ -186,8 +187,9 @@ export function gameReducer(s, a) {
     }
     case 'GIVE_UP': {
       if (s.players.length === 1 && s.mode === 'local') {
+        // Solo: record failure, reveal the answer, then move on.
         const soloMoves = [...s.soloMoves, null];
-        return afterRound({ ...s, soloMoves, lastResult: { winnerId: null, reason: 'gave-up' } });
+        return unsolvedReveal({ ...s, soloMoves }, 'gave-up');
       }
       const pid = s.mode === 'net' ? s.net?.you : (a.playerId ?? s.viewAs);
       if (!pid || !s.roster[pid]) return s;
@@ -195,9 +197,29 @@ export function gameReducer(s, a) {
       const st = { ...s, roster };
       if (Object.keys(roster).length > 0 && Object.values(roster).every((r) => r.givenUp)) {
         if (st.phase === 'race' && st.race) return onSolved(st, st.race.leaderId, st.race.bestMoves, false);
-        return { ...st, phase: 'reveal', lastResult: { winnerId: null, reason: 'gave-up' }, race: null };
+        return unsolvedReveal(st, 'gave-up');
       }
       return st;
+    }
+    case 'ANSWER_STEP': {
+      // Answer playback during reveal: slide without counting or solving.
+      if (s.phase !== 'reveal' || !s.lastResult?.answer) return s;
+      const idx = s.answerIdx ?? 0;
+      if (idx >= s.lastResult.answer.length) return s;
+      const pid = activePid(s);
+      const box = s.sandboxes[pid];
+      if (!box) return s;
+      const step = s.lastResult.answer[idx];
+      const r = slide(s.walls, box.robots, step.robotId, step.dir);
+      if (!r.moved) return { ...s, answerIdx: idx + 1 }; // skip stale step
+      const robots = box.robots.map((q) => (q.id === step.robotId ? { ...q, x: r.x, y: r.y, dir: step.dir } : q));
+      return { ...s, sandboxes: { ...s.sandboxes, [pid]: { ...box, robots } }, answerIdx: idx + 1 };
+    }
+    case 'ANSWER_REPLAY': {
+      if (s.phase !== 'reveal' || !s.lastResult?.answer) return s;
+      const pid = activePid(s);
+      if (!s.sandboxes[pid]) return s;
+      return { ...s, sandboxes: { ...s.sandboxes, [pid]: sandboxOf(s.startRobots) }, answerIdx: 0 };
     }
     case 'NEXT_ROUND':
       if (s.mode === 'net' && !s.net?.isHost) return s; // server drives for guests
@@ -240,6 +262,7 @@ export function gameReducer(s, a) {
         scores,
         lastResult: null,
         solutionSent: false,
+        answerIdx: 0,
         illegal: null,
         net: s.net ? { ...s.net, status: 'playing', connected: true } : s.net,
       };
@@ -250,24 +273,36 @@ export function gameReducer(s, a) {
       if (s.phase !== 'race' || !s.race) return s;
       return { ...s, race: { ...s.race, timeLeft: a.timeLeft } };
     case 'NET_PRESENCE': {
+      // Own sandbox is the source of truth — never let a server echo clear
+      // our local solved flag before the RACE broadcast arrives.
+      const me = s.net?.you;
       const roster = { ...s.roster };
       for (const [pid, info] of Object.entries(a.counts ?? {})) {
-        if (roster[pid]) roster[pid] = { ...roster[pid], ...info };
+        if (pid !== me && roster[pid]) roster[pid] = { ...roster[pid], ...info };
       }
       return { ...s, roster };
     }
-    case 'NET_END':
+    case 'NET_END': {
+      // Server answer (if any) plays back on our own sandbox from the origin.
+      const you = s.net?.you;
+      const sandboxes = you && s.sandboxes[you]
+        ? { ...s.sandboxes, [you]: sandboxOf(s.startRobots) }
+        : s.sandboxes;
       return {
         ...s,
+        sandboxes,
         phase: 'reveal',
         race: null,
+        answerIdx: 0,
         scores: a.scores ?? s.scores,
-        lastResult: { winnerId: a.winnerId, movesUsed: a.movesUsed, reason: a.reason, optimal: !!a.optimal },
+        lastResult: { winnerId: a.winnerId, movesUsed: a.movesUsed, reason: a.reason, optimal: !!a.optimal, answer: a.answer ?? null },
       };
+    }
     case 'NET_GAMEOVER':
       return { ...s, phase: 'gameOver', scores: a.scores ?? s.scores, race: null };
     case 'NET_SENT':
-      return { ...s, solutionSent: true };
+      // Stamp the submitted move count so a later *better* solve resends.
+      return { ...s, solutionSent: a.moves };
     case 'NET_CLOSE':
       return s.net ? { ...s, net: { ...s.net, connected: false } } : s;
     default:
@@ -286,9 +321,11 @@ function onSandboxSolved(s, pid, movesUsed) {
   if (s.players.length === 1 && s.mode === 'local') {
     return onSolved({ ...s, roster }, pid, movesUsed, false);
   }
-  // Online: wait for the server to validate + broadcast (prevents fakes).
+  // Online: mark solved locally; the App effect submits to the server, which
+  // validates + broadcasts (prevents fakes). Never flag solutionSent here —
+  // the effect owns sending, otherwise the server never hears about it.
   if (s.mode === 'net') {
-    return { ...s, roster, solutionSent: true };
+    return { ...s, roster };
   }
   // Optimal (≤ solver par) is unbeatable → instant win.
   if (isOptimalSolve(movesUsed, s.par)) {
@@ -322,14 +359,33 @@ function startRound(s) {
     race: null,
     lastResult: null,
     solutionSent: false,
+    answerIdx: 0,
     illegal: null,
     phase: 'thinking',
     deckPos: s.deckPos,
   };
 }
 
-function onSolved(s, winnerId, movesUsed, optimal) {
-  const scores = { ...s.scores, [winnerId]: (s.scores[winnerId] ?? 0) + 1 };
+// Unsolved round end: reveal + compute the solver's answer for auto-playback
+// (null when beyond search caps). Playback starts from the round origin.
+function unsolvedReveal(s, reason) {
+  const target = activeTarget(s);
+  const answer = solvePath(s.walls, s.startRobots, target);
+  const pid = activePid(s);
+  const sandboxes = pid && s.sandboxes[pid]
+    ? { ...s.sandboxes, [pid]: sandboxOf(s.startRobots) }
+    : s.sandboxes;
+  return {
+    ...s,
+    sandboxes,
+    phase: 'reveal',
+    race: null,
+    answerIdx: 0,
+    lastResult: { winnerId: null, reason, answer },
+  };
+}
+
+function onSolved(s, winnerId, movesUsed, optimal) {  const scores = { ...s.scores, [winnerId]: (s.scores[winnerId] ?? 0) + 1 };
   const soloMoves = s.players.length === 1 && s.mode === 'local' ? [...s.soloMoves, movesUsed] : s.soloMoves;
   const st = {
     ...s,
