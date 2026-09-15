@@ -11,9 +11,9 @@
 // sandbox is local; race/rounds are driven by server broadcasts (NET_*).
 
 import { useMemo, useReducer } from 'react';
-import { buildBoard, placeRobots, makeDeck } from '../game/board.js';
-import { slide, isMultiSolved, solveMinMoves, solvePath } from '../game/engine.js';
-import { RACE_SECONDS, isOptimalSolve, meetsMinPar, MAX_DEAL_ATTEMPTS } from '../game/race.js';
+import { buildBoard, placeRobots, makeDeck, pickActiveTargets, scatterRobots, generateTiles, POWER_TILES_ENABLED } from '../game/board.js';
+import { slide, isMultiSolved, collectionComplete, solvePath, adjacentWallKey, behindCell, deriveBoard, chargesUsed, inBounds, isCenterCell, terrainOpts, moveCost } from '../game/engine.js';
+import { RACE_SECONDS, isOptimalSolve, findDeal, cleanMove } from '../game/race.js';
 
 const PLAYER_PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
 
@@ -25,8 +25,32 @@ function snapshot(robots) {
   return robots.map((r) => ({ ...r }));
 }
 
-function sandboxOf(robots) {
-  return { robots: snapshot(robots), movesUsed: 0, history: [] };
+function sandboxOf(robots, tiles = []) {
+  return {
+    robots: snapshot(robots),
+    movesUsed: 0,
+    history: [],
+    collected: [],
+    tiles: tiles.map((t) => ({ ...t })),
+    flips: 0,
+  };
+}
+
+// World-progress carried across position-only updates (undo/cancel keep
+// collected goals, tile flips and charges; only RESET starts over).
+function keepWorld(box) {
+  return {
+    collected: box.collected ?? [],
+    tiles: (box.tiles ?? []).map((t) => ({ ...t })),
+    flips: box.flips ?? 0,
+  };
+}
+
+// Active wall base for a sandbox: yellow set while ANY switch tile is
+// yellow (OR semantics — no flag to desync), else the white set.
+function activeBaseWalls(s, box) {
+  const yellow = (box.tiles ?? []).some((t) => t.kind === 'yellow');
+  return yellow && s.wallsAlt?.size ? s.wallsAlt : s.walls;
 }
 
 export function initialState() {
@@ -39,6 +63,8 @@ export function initialState() {
     pointsToWin: 0, // 0 = play all rounds; else first to X
     robotCount: 4,
     walls: new Set(),
+    wallsAlt: new Set(),
+    roundTiles: [],
     targets: [],
     deck: [],
     deckPos: 0,
@@ -61,49 +87,61 @@ export function initialState() {
 }
 
 function dealTarget(state) {
-  // Active set: targetCount consecutive deck entries. Par/optimal only exist
-  // for single-target rounds (multi-board BFS is out of search scope).
-  // Rounds re-scatter until the puzzle needs MIN_ROUND_PAR moves (or the
-  // solver can't find a line at all — accepted as hard enough).
-  const count = state.targetCount ?? 1;
-  const actives = [];
-  for (let k = 0; k < count; k++) {
-    actives.push(state.targets[state.deck[(state.deckPos + k) % state.deck.length]]);
-  }
+  // Delegates to the shared budgeted search: proven 6+ lines preferred,
+  // sealed-looking targets skipped, multi-target rounds single-scattered.
+  // Solver sees the same ice/warp terrain as play (white set, no flips yet).
   const base = snapshot(state.robots?.length ? state.robots : state.startRobots);
-  let robots = base;
-  let par = null;
-  for (let attempt = 0; attempt < MAX_DEAL_ATTEMPTS; attempt++) {
-    robots = scatterRobots(snapshot(base), state.targets);
-    par = count === 1 ? solveMinMoves(state.walls, robots, actives[0]) : null;
-    if (meetsMinPar(par)) break;
-  }
-  return { robots, par };
-}
-
-// Fresh scatter: every robot on a free cell (never a target, never center).
-function scatterRobots(robots, targets) {
-  const taken = new Set(targets.map((t) => `${t.x},${t.y}`));
-  for (const r of robots) {
-    for (let tries = 0; tries < 500; tries++) {
-      const x = Math.floor(Math.random() * 16);
-      const y = Math.floor(Math.random() * 16);
-      const lockedCenter = x >= 7 && x <= 8 && y >= 7 && y <= 8;
-      const k = `${x},${y}`;
-      if (lockedCenter || taken.has(k)) continue;
-      taken.add(k);
-      r.x = x;
-      r.y = y;
-      r.dir = 'up'; // fresh round: rockets face up until moved
-      break;
-    }
-  }
-  return robots;
+  const kinds = base.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' }));
+  if (!kinds.length) return { robots: [], par: null, deckPos: state.deckPos };
+  const tiles = state.roundTiles ?? [];
+  const tileCells = tiles.map((t) => `${t.x},${t.y}`);
+  const terrain = terrainOpts(tiles);
+  return findDeal(
+    {
+      walls: state.walls,
+      targets: state.targets,
+      deck: state.deck,
+      deckPos: state.deckPos,
+      targetCount: state.targetCount ?? 1,
+      robotKinds: kinds,
+      terrain,
+    },
+    { scatter: (ks) => scatterRobots(ks.map((k) => ({ ...k })), state.targets, tileCells) },
+  );
 }
 
 /** Which sandbox does a move/undo/reset apply to? */
 function activePid(s) {
   return s.mode === 'net' ? s.net?.you : s.viewAs;
+}
+
+// Ram resolution: red breaches the segment (stays put), green drops a 1×1
+// block on the cell behind itself. Costs a move, spends the charge, voids
+// par (powers are unmodeled by the solver). History-derived walls/terrain
+// make undo (pop) and reset (clear) restore everything automatically.
+function applyRam(s, pid, box, bot, dir, key) {
+  const prev = snapshot(box.robots);
+  const movesUsed = box.movesUsed + 1;
+  let history;
+  if (bot.color === 'red') {
+    history = [...box.history, { kind: 'breach', robotId: bot.id, wallKey: key, prev }];
+  } else {
+    const c = behindCell(bot.x, bot.y, dir);
+    const taken = new Set(box.robots.map((q) => `${q.x},${q.y}`));
+    const goals = new Set((s.targets ?? []).map((t) => `${t.x},${t.y}`));
+    const tiled = new Set((box.tiles ?? []).map((t) => `${t.x},${t.y}`));
+    const { blocks } = deriveBoard(activeBaseWalls(s, box), box.history);
+    if (!inBounds(c.x, c.y) || isCenterCell(c.x, c.y) || taken.has(`${c.x},${c.y}`) || goals.has(`${c.x},${c.y}`) || blocks.has(`${c.x},${c.y}`) || tiled.has(`${c.x},${c.y}`)) {
+      return { ...s, illegal: { robotId: bot.id, n: (s.illegal?.n ?? 0) + 1 } };
+    }
+    history = [...box.history, { kind: 'block', robotId: bot.id, wallKey: key, x: c.x, y: c.y, prev }];
+  }
+  const sandboxes = { ...s.sandboxes, [pid]: { robots: prev, movesUsed, history, ...keepWorld(box) } };
+  const roster = {
+    ...s.roster,
+    [pid]: { ...s.roster[pid], movesUsed, solved: false },
+  };
+  return { ...s, sandboxes, roster, par: null };
 }
 
 function clampRaceSeconds(v) {
@@ -123,6 +161,7 @@ export function gameReducer(s, a) {
     case 'START': {
       const board = buildBoard({ robotCount: a.robotCount, randomExtraWalls: a.chaos });
       placeRobots(board);
+      const roundTiles = POWER_TILES_ENABLED ? generateTiles(board.targets, board.robots) : [];
       const deck = makeDeck(board.targets);
       const players = a.players.map((p, i) => ({ ...p, id: `p${i}` }));
       const scores = Object.fromEntries(players.map((p) => [p.id, 0]));
@@ -135,6 +174,8 @@ export function gameReducer(s, a) {
         targetCount: clampTargetCount(a.targetCount),
         robotCount: a.robotCount,
         walls: board.walls,
+        wallsAlt: board.wallsAlt,
+        roundTiles,
         targets: board.targets,
         startRobots: snapshot(board.robots),
         robots: snapshot(board.robots),
@@ -142,7 +183,7 @@ export function gameReducer(s, a) {
         scores,
         viewAs: players[0]?.id ?? null,
       };
-      return startRound(st);
+      return startRound(st, dealTarget(st));
     }
     case 'VIEW_AS': {
       if (s.mode !== 'local' || !s.sandboxes[a.playerId]) return s;
@@ -153,10 +194,26 @@ export function gameReducer(s, a) {
       const pid = activePid(s);
       const box = s.sandboxes[pid];
       if (!box || s.roster[pid]?.givenUp) return s;
-      const r = slide(s.walls, box.robots, a.robotId, a.dir);
-      if (!r.moved) return { ...s, illegal: { robotId: a.robotId, n: (s.illegal?.n ?? 0) + 1 } };
+      const bot = box.robots.find((q) => q.id === a.robotId);
+      if (!bot) return s;
+      // Live terrain: active wall set (white/yellow switch) minus breached
+      // segments, plus green blocks; ice/warp from this sandbox's tiles.
+      const terrain = deriveBoard(activeBaseWalls(s, box), box.history);
+      const ground = terrainOpts(box.tiles ?? []);
+      const opts = { blocked: terrain.blocks, ice: ground.ice, warps: ground.warps };
+      const r = slide(terrain.walls, box.robots, a.robotId, a.dir, opts);
+      if (!r.moved) {
+        // Ram powers: red breaches / green blocks an immediately adjacent
+        // real wall segment (once each per round). Anything else is illegal.
+        const spent = chargesUsed(box.history);
+        const key = adjacentWallKey(terrain.walls, bot.x, bot.y, a.dir);
+        if (key && ((bot.color === 'red' && spent.breach < 1) || (bot.color === 'green' && spent.block < 1))) {
+          return applyRam(s, pid, box, bot, a.dir, key);
+        }
+        return { ...s, illegal: { robotId: a.robotId, n: (s.illegal?.n ?? 0) + 1 } };
+      }
       const prev = snapshot(box.robots);
-      const robots = box.robots.map((q) => (q.id === a.robotId ? { ...q, x: r.x, y: r.y, dir: a.dir } : q));
+      const robots = box.robots.map((q) => (q.id === a.robotId ? { ...q, x: r.x, y: r.y, dir: r.endDir } : q));
       // Immediate reverse: the same robot sliding back onto its pre-last-move
       // cell cancels the pair (no net move) instead of counting a new one.
       const lastEntry = box.history[box.history.length - 1];
@@ -164,8 +221,8 @@ export function gameReducer(s, a) {
         const before = lastEntry.prev.find((q) => q.id === a.robotId);
         if (before && before.x === r.x && before.y === r.y) {
           const history = box.history.slice(0, -1);
-          const movesUsed = Math.max(0, box.movesUsed - 1);
-          const sandboxes = { ...s.sandboxes, [pid]: { robots: lastEntry.prev, movesUsed, history } };
+          const movesUsed = Math.max(0, box.movesUsed - moveCost(bot.color));
+          const sandboxes = { ...s.sandboxes, [pid]: { robots: lastEntry.prev, movesUsed, history, ...keepWorld(box) } };
           const roster = {
             ...s.roster,
             [pid]: { ...s.roster[pid], movesUsed, solved: false },
@@ -173,16 +230,43 @@ export function gameReducer(s, a) {
           return { ...s, sandboxes, roster };
         }
       }
-      const movesUsed = box.movesUsed + 1;
-      // Store compact replay (robotId+dir) alongside undo snapshots.
-      const history = [...box.history, { robotId: a.robotId, dir: a.dir, prev }];
-      const sandboxes = { ...s.sandboxes, [pid]: { robots, movesUsed, history } };
+      const movesUsed = box.movesUsed + moveCost(bot.color);
+      // Store compact replay (kind + undo snapshot).
+      const history = [...box.history, { kind: 'slide', robotId: a.robotId, dir: a.dir, prev }];
+      // Landing on a white/yellow switch tile flips it and swaps the wall
+      // set for this sandbox (cumulative world progress, like collected).
+      // Flips void par — the solver never sees them.
+      let tiles = box.tiles ?? [];
+      let flips = box.flips ?? 0;
+      let par = s.par;
+      const landed = tiles.find((t) => t.x === r.x && t.y === r.y && (t.kind === 'white' || t.kind === 'yellow'));
+      if (landed) {
+        const to = landed.kind === 'white' ? 'yellow' : 'white';
+        tiles = tiles.map((t) => (t.id === landed.id ? { ...t, kind: to } : t));
+        flips += 1;
+        par = null;
+      }
+      // Multi-target: touching a goal collects it (cumulative — stays
+      // collected even if the robot later slides away). The round ends when
+      // every active target has been touched at least once.
+      const act = activeTargets(s);
+      let collected = box.collected ?? [];
+      if (act.length > 1) {
+        // Touch collection: any traversed cell (not just the stop) counts.
+        const trail = new Set((r.trail ?? []).map((c) => `${c.x},${c.y}`));
+        const newly = act
+          .filter((t) => !collected.includes(t.id) && t.color === bot.color && trail.has(`${t.x},${t.y}`))
+          .map((t) => t.id);
+        if (newly.length) collected = [...collected, ...newly];
+      }
+      const sandboxes = { ...s.sandboxes, [pid]: { robots, movesUsed, history, collected, tiles, flips } };
       const roster = {
         ...s.roster,
         [pid]: { ...s.roster[pid], movesUsed, solved: s.roster[pid]?.solved ?? false },
       };
-      const st = { ...s, sandboxes, roster };
-      if (!isMultiSolved(robots, activeTargets(st))) return st;
+      const st = { ...s, sandboxes, roster, par };
+      const solved = act.length > 1 ? collectionComplete(collected, act) : isMultiSolved(robots, act);
+      if (!solved) return st;
       return onSandboxSolved(st, pid, movesUsed);
     }
     case 'UNDO': {
@@ -192,13 +276,20 @@ export function gameReducer(s, a) {
       if (!box || box.history.length === 0 || s.roster[pid]?.givenUp) return s;
       const history = [...box.history];
       const last = history.pop();
+      // Refund what the undone entry cost: slides pay the mover's color
+      // rate (silver 0.5), ram powers always cost 1.
+      const refund = last.kind === 'slide'
+        ? moveCost(box.robots.find((q) => q.id === last.robotId)?.color)
+        : 1;
       const sandboxes = {
         ...s.sandboxes,
-        [pid]: { robots: last.prev, movesUsed: Math.max(0, box.movesUsed - 1), history },
+        // World progress (goals, tile flips, charges) survives undo — it is
+        // cumulative per round; only RESET starts over.
+        [pid]: { robots: last.prev, movesUsed: Math.max(0, box.movesUsed - refund), history, ...keepWorld(box) },
       };
       const roster = {
         ...s.roster,
-        [pid]: { ...s.roster[pid], movesUsed: Math.max(0, box.movesUsed - 1), solved: false },
+        [pid]: { ...s.roster[pid], movesUsed: Math.max(0, box.movesUsed - refund), solved: false },
       };
       return { ...s, sandboxes, roster };
     }
@@ -206,7 +297,7 @@ export function gameReducer(s, a) {
       if (s.phase !== 'thinking' && s.phase !== 'race') return s;
       const pid = activePid(s);
       if (!s.sandboxes[pid] || s.roster[pid]?.givenUp) return s;
-      const sandboxes = { ...s.sandboxes, [pid]: sandboxOf(s.startRobots) };
+      const sandboxes = { ...s.sandboxes, [pid]: sandboxOf(s.startRobots, s.roundTiles) };
       const roster = { ...s.roster, [pid]: { ...s.roster[pid], movesUsed: 0, solved: false } };
       return { ...s, sandboxes, roster };
     }
@@ -250,18 +341,26 @@ export function gameReducer(s, a) {
       const step = s.lastResult.answer[idx];
       const r = slide(s.walls, box.robots, step.robotId, step.dir);
       if (!r.moved) return { ...s, answerIdx: idx + 1 }; // skip stale step
-      const robots = box.robots.map((q) => (q.id === step.robotId ? { ...q, x: r.x, y: r.y, dir: step.dir } : q));
+      const robots = box.robots.map((q) => (q.id === step.robotId ? { ...q, x: r.x, y: r.y, dir: r.endDir } : q));
       return { ...s, sandboxes: { ...s.sandboxes, [pid]: { ...box, robots } }, answerIdx: idx + 1 };
     }
     case 'ANSWER_REPLAY': {
       if (s.phase !== 'reveal' || !s.lastResult?.answer) return s;
       const pid = activePid(s);
       if (!s.sandboxes[pid]) return s;
-      return { ...s, sandboxes: { ...s.sandboxes, [pid]: sandboxOf(s.startRobots) }, answerIdx: 0 };
+      return { ...s, sandboxes: { ...s.sandboxes, [pid]: sandboxOf(s.startRobots, s.roundTiles) }, answerIdx: 0 };
     }
     case 'NEXT_ROUND':
       if (s.mode === 'net' && !s.net?.isHost) return s; // server drives for guests
       return afterRound(s);
+    case 'APPLY_PREDEALT': {
+      // Instant round advance using a background pre-deal. The payload is
+      // self-consistent (robots/par paired with its own deckPos), so it is
+      // always safe to apply — only sanity-checked, never recomputed.
+      if (s.phase !== 'reveal' || s.mode !== 'local') return s;
+      if (!Array.isArray(a.robots) || !a.robots.length || !Number.isFinite(a.deckPos)) return s;
+      return advanceWithDeal(s, { robots: snapshot(a.robots), par: a.par ?? null, deckPos: a.deckPos });
+    }
     case 'QUIT':
       return initialState();
     // ── online (server-driven) ──
@@ -269,7 +368,7 @@ export function gameReducer(s, a) {
       return {
         ...initialState(),
         mode: 'net',
-        net: { code: a.code, you: a.you, isHost: a.isHost, hostId: a.hostId, status: 'lobby', connected: true },
+        net: { code: a.code, you: a.you, isHost: a.isHost, hostId: a.hostId, status: 'lobby', connected: true, arenaReady: !!a.arenaReady },
         players: a.players,
         roundsTotal: a.roundsTotal,
         robotCount: a.robotCount,
@@ -280,7 +379,8 @@ export function gameReducer(s, a) {
     case 'NET_ROUND': {
       // Authoritative round snapshot from the server.
       const players = a.players;
-      const sandboxes = Object.fromEntries(players.map((p) => [p.id, sandboxOf(a.startRobots)]));
+      const roundTiles = (a.tiles ?? []).map((t) => ({ ...t }));
+      const sandboxes = Object.fromEntries(players.map((p) => [p.id, sandboxOf(a.startRobots, roundTiles)]));
       const roster = Object.fromEntries(
         players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false }]),
       );
@@ -293,6 +393,8 @@ export function gameReducer(s, a) {
         targetCount: clampTargetCount(a.targetCount ?? s.targetCount),
         raceSeconds: clampRaceSeconds(a.raceSeconds ?? s.raceSeconds),
         walls: new Set(a.walls),
+        wallsAlt: new Set(a.wallsAlt ?? []),
+        roundTiles: roundTiles,
         targets: a.targets,
         deck: a.deck,
         deckPos: a.deckPos ?? 0,
@@ -311,7 +413,7 @@ export function gameReducer(s, a) {
       };
     }
     case 'NET_RACE':
-      return { ...s, phase: 'race', race: { leaderId: a.leaderId, bestMoves: a.bestMoves, timeLeft: a.timeLeft, total: a.total ?? s.raceSeconds } };
+      return { ...s, phase: 'race', race: { leaderId: a.leaderId, bestMoves: a.bestMoves, timeLeft: a.timeLeft, total: a.total ?? s.raceSeconds, path: a.path ?? null }, par: a.par === undefined ? s.par : a.par };
     case 'NET_TICK':
       if (s.phase !== 'race' || !s.race) return s;
       return { ...s, race: { ...s.race, timeLeft: a.timeLeft } };
@@ -329,7 +431,7 @@ export function gameReducer(s, a) {
       // Server answer (if any) plays back on our own sandbox from the origin.
       const you = s.net?.you;
       const sandboxes = you && s.sandboxes[you]
-        ? { ...s.sandboxes, [you]: sandboxOf(s.startRobots) }
+        ? { ...s.sandboxes, [you]: sandboxOf(s.startRobots, s.roundTiles) }
         : s.sandboxes;
       return {
         ...s,
@@ -338,7 +440,7 @@ export function gameReducer(s, a) {
         race: null,
         answerIdx: 0,
         scores: a.scores ?? s.scores,
-        lastResult: { winnerId: a.winnerId, movesUsed: a.movesUsed, reason: a.reason, optimal: !!a.optimal, answer: a.answer ?? null },
+        lastResult: { winnerId: a.winnerId, movesUsed: a.movesUsed, reason: a.reason, optimal: !!a.optimal, answer: a.answer ?? null, path: a.path ?? null },
       };
     }
     case 'NET_GAMEOVER':
@@ -384,19 +486,20 @@ function onSandboxSolved(s, pid, movesUsed) {
   return { ...s, roster };
 }
 
-function startRound(s) {
+function startRound(s, dealt) {
   const round = s.round + 1;
   const st = { ...s, round, robots: s.startRobots?.length ? s.startRobots : s.robots };
-  const dealt = dealTarget({ ...st, robots: st.startRobots?.length ? st.startRobots : [] });
-  const sandboxes = Object.fromEntries(s.players.map((p) => [p.id, sandboxOf(dealt.robots)]));
+  // dealt may be a background pre-deal (APPLY_PREDEALT) or computed now.
+  const d = dealt ?? dealTarget({ ...st, robots: st.startRobots?.length ? st.startRobots : [] });
+  const sandboxes = Object.fromEntries(s.players.map((p) => [p.id, sandboxOf(d.robots, s.roundTiles)]));
   const roster = Object.fromEntries(
     s.players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false }]),
   );
   return {
     ...st,
-    startRobots: snapshot(dealt.robots),
-    robots: snapshot(dealt.robots),
-    par: dealt.par,
+    startRobots: snapshot(d.robots),
+    robots: snapshot(d.robots),
+    par: d.par,
     sandboxes,
     roster,
     race: null,
@@ -405,7 +508,7 @@ function startRound(s) {
     answerIdx: 0,
     illegal: null,
     phase: 'thinking',
-    deckPos: s.deckPos,
+    deckPos: d.deckPos,
   };
 }
 
@@ -413,10 +516,13 @@ function startRound(s) {
 // (single-target only, null when beyond search caps). Playback starts clean.
 function unsolvedReveal(s, reason) {
   const act = activeTargets(s);
-  const answer = act.length === 1 ? solvePath(s.walls, s.startRobots, act[0]) : null;
+  const ground = terrainOpts(s.roundTiles ?? []);
+  const answer = act.length === 1
+    ? solvePath(s.walls, s.startRobots, act[0], 9, 120000, ground)
+    : null;
   const pid = activePid(s);
   const sandboxes = pid && s.sandboxes[pid]
-    ? { ...s.sandboxes, [pid]: sandboxOf(s.startRobots) }
+    ? { ...s.sandboxes, [pid]: sandboxOf(s.startRobots, s.roundTiles) }
     : s.sandboxes;
   return {
     ...s,
@@ -428,13 +534,16 @@ function unsolvedReveal(s, reason) {
   };
 }
 
-function onSolved(s, winnerId, movesUsed, optimal) {  const scores = { ...s.scores, [winnerId]: (s.scores[winnerId] ?? 0) + 1 };
+function onSolved(s, winnerId, movesUsed, optimal) {
+  const scores = { ...s.scores, [winnerId]: (s.scores[winnerId] ?? 0) + 1 };
   const soloMoves = s.players.length === 1 && s.mode === 'local' ? [...s.soloMoves, movesUsed] : s.soloMoves;
+  // Keep the winning line for path visualization (replay on the board).
+  const path = s.sandboxes[winnerId]?.history.map(cleanMove) ?? [];
   const st = {
     ...s,
     scores,
     soloMoves,
-    lastResult: { winnerId, movesUsed, reason: 'solved', optimal },
+    lastResult: { winnerId, movesUsed, reason: 'solved', optimal, path },
     race: null,
   };
   if (s.players.length === 1 && s.mode === 'local') return afterRound(st);
@@ -449,19 +558,23 @@ function afterRound(s) {
   }
   if (s.round >= s.roundsTotal) return { ...s, phase: 'gameOver' };
   if (s.mode === 'net') return s; // server sends the next NET_ROUND
-  return startRound({ ...s, deckPos: s.deckPos + (s.targetCount ?? 1) });
+  const at = { ...s, deckPos: s.deckPos + (s.targetCount ?? 1) };
+  return startRound(s, dealTarget(at));
 }
 
-/** Active target set: targetCount consecutive deck entries (empty pre-deal). */
-export function activeTargets(s) {
-  const count = s.targetCount ?? 1;
-  const out = [];
-  if (!s.deck.length) return out;
-  for (let k = 0; k < count; k++) {
-    const t = s.targets[s.deck[(s.deckPos + k) % s.deck.length]];
-    if (t) out.push(t);
+// Same as afterRound but applies an already-computed (pre-dealt) round.
+function advanceWithDeal(s, dealt) {
+  if (s.pointsToWin > 0) {
+    const champ = s.players.find((p) => (s.scores[p.id] ?? 0) >= s.pointsToWin);
+    if (champ) return { ...s, phase: 'gameOver' };
   }
-  return out;
+  if (s.round >= s.roundsTotal) return { ...s, phase: 'gameOver' };
+  return startRound(s, dealt);
+}
+
+/** Active target set: distinct-colour deck entries (empty pre-deal). */
+export function activeTargets(s) {
+  return pickActiveTargets(s.targets, s.deck, s.deckPos, s.targetCount ?? 1);
 }
 
 /** Robots to render: active sandbox (hot-seat viewAs / net self / solo). */

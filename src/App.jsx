@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGame, activeTargets, playerColor, visibleRobots } from './state/useGame.js';
-import { isMultiSolved } from './game/engine.js';
+import { isMultiSolved, collectionComplete } from './game/engine.js';
+import { previewPath, cleanMove } from './game/race.js';
 import SetupScreen from './components/SetupScreen.jsx';
 import Lobby from './components/Lobby.jsx';
 import Board from './components/Board.jsx';
@@ -15,6 +16,51 @@ export default function App() {
   const [netError, setNetError] = useState('');
   const wsRef = useRef(null);
   const robots = visibleRobots(state);
+
+  // Background map builder: while the current round is played, the next
+  // round's deal is solved off-thread so Next is instant (sync fallback
+  // if the worker is missing or still busy).
+  const dealWorkerRef = useRef(null);
+  const pendingDeal = useRef(null);
+  const pendingJobId = useRef(null);
+
+  useEffect(() => {
+    let w = null;
+    try {
+      w = new Worker(new URL('./game/dealWorker.js', import.meta.url), { type: 'module' });
+    } catch {
+      return;
+    }
+    dealWorkerRef.current = w;
+    const onMsg = (e) => {
+      const d = e.data;
+      if (d?.ok && d.jobId === pendingJobId.current) pendingDeal.current = d;
+    };
+    w.addEventListener('message', onMsg);
+    return () => {
+      w.terminate();
+      dealWorkerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (state.mode !== 'local' || state.phase !== 'thinking' || !state.players.length) return;
+    const w = dealWorkerRef.current;
+    if (!w) return;
+    const jobId = `r${state.round}`;
+    pendingJobId.current = jobId;
+    pendingDeal.current = null;
+    w.postMessage({
+      jobId,
+      walls: [...state.walls],
+      targets: state.targets,
+      deck: state.deck,
+      deckPos: state.deckPos + (state.targetCount ?? 1),
+      targetCount: state.targetCount ?? 1,
+      tiles: (state.roundTiles ?? []).map((t) => ({ ...t })),
+      robotKinds: state.startRobots.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' })),
+    });
+  }, [state.mode, state.phase, state.round]);
 
   const send = useCallback((msg) => {
     const ws = wsRef.current;
@@ -59,11 +105,43 @@ export default function App() {
     if (state.solutionSent === box.movesUsed) return;
     const targets = activeTargets(state);
     if (!targets.length) return;
-    if (isMultiSolved(box.robots, targets)) {
-      send({ t: 'SOLUTION', moves: box.history.map((h) => ({ robotId: h.robotId, dir: h.dir })) });
+    const done = targets.length > 1
+      ? collectionComplete(box.collected, targets)
+      : isMultiSolved(box.robots, targets);
+    if (done) {
+      send({ t: 'SOLUTION', moves: box.history.map(cleanMove) });
       dispatch({ type: 'NET_SENT', moves: box.movesUsed });
     }
   });
+
+  // Lead/winning line overlay: path of the lowest-move solve, drawn as
+  // numbered stops. Auto-shows on a solved reveal, hides on a fresh round.
+  const [showPath, setShowPath] = useState(false);
+  useEffect(() => {
+    if (state.phase === 'reveal' && state.lastResult?.winnerId) setShowPath(true);
+    else if (state.phase === 'thinking') setShowPath(false);
+  }, [state.phase]);
+  const leadPath = state.phase === 'race'
+    ? state.race?.path
+    : state.phase === 'reveal' ? state.lastResult?.path : null;
+  const pathPreview = useMemo(
+    () => (showPath ? previewPath(state.walls, state.startRobots, leadPath, 200, {
+      targets: activeTargets(state),
+      altWalls: [...(state.wallsAlt ?? [])],
+      tiles: (state.roundTiles ?? []).map((t) => ({ ...t })),
+    }) : []),
+    [showPath, state.walls, state.startRobots, state.targets, state.deck, state.deckPos, state.targetCount, leadPath],
+  );
+  // Placed green blocks in the visible sandbox (derived from its history).
+  const myPid = state.mode === 'net' ? state.net?.you : (state.viewAs ?? state.players[0]?.id);
+  const myBlocks = useMemo(() => {
+    const hist = (myPid && state.sandboxes[myPid]?.history) ?? [];
+    return hist.filter((h) => h.kind === 'block').map((h) => ({ x: h.x, y: h.y }));
+  }, [myPid, state.sandboxes]);
+  const myBrokenWalls = useMemo(() => {
+    const hist = (myPid && state.sandboxes[myPid]?.history) ?? [];
+    return hist.filter((h) => h.kind === 'breach').map((h) => h.wallKey);
+  }, [myPid, state.sandboxes]);
 
   // Net: host advances rounds / generic sender for lobby actions.
   const netAction = useCallback((msg) => send(msg), [send]);
@@ -112,6 +190,18 @@ export default function App() {
     if (state.mode === 'net') send({ t: 'GIVE_UP' });
     dispatch({ type: 'GIVE_UP' });
   }, [state.mode, send, dispatch]);
+
+  // Advance rounds: consume the background pre-deal when ready, else deal now.
+  const onNextRound = useCallback(() => {
+    if (state.mode === 'net') {
+      if (state.net?.isHost) send({ t: 'NEXT' });
+      return;
+    }
+    const p = pendingDeal.current;
+    pendingDeal.current = null;
+    if (p?.robots?.length) dispatch({ type: 'APPLY_PREDEALT', robots: p.robots, par: p.par, deckPos: p.deckPos });
+    else dispatch({ type: 'NEXT_ROUND' });
+  }, [state.mode, state.net, send, dispatch]);
 
   // Global hotkeys (single listener — the source of truth for keys):
   // arrows/WASD move · 1-5 select rocket · U undo · R reset · G give up.
@@ -210,8 +300,13 @@ export default function App() {
           <Board
             walls={state.walls}
             robots={robots}
+            collectedIds={myPid ? state.sandboxes[myPid]?.collected : []}
             targets={state.targets}
             activeTargets={targets}
+            pathPreview={pathPreview}
+            blocks={myBlocks}
+            brokenWalls={myBrokenWalls}
+            tiles={myPid ? state.sandboxes[myPid]?.tiles : []}
             selectedId={sel?.id}
             onSelect={setSelectedId}
             onCellAim={onCellAim}
@@ -227,7 +322,7 @@ export default function App() {
             robotCount={robots.length}
           />
         </div>
-        <Sidebar state={state} dispatch={dispatch} send={netAction} />
+        <Sidebar state={state} dispatch={dispatch} send={netAction} onNextRound={onNextRound} showPath={showPath} onTogglePath={() => setShowPath((v) => !v)} />
       </main>
     </div>
   );
@@ -236,16 +331,16 @@ export default function App() {
 function routeServerMessage(m, dispatch, setNetError, onKicked) {
   switch (m.t) {
     case 'WELCOME':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, arenaReady: m.arenaReady });
       break;
     case 'LOBBY':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, arenaReady: m.arenaReady });
       break;
     case 'ROUND':
       dispatch({ type: 'NET_ROUND', ...m });
       break;
     case 'RACE':
-      dispatch({ type: 'NET_RACE', leaderId: m.leaderId, bestMoves: m.bestMoves, timeLeft: m.timeLeft, total: m.total });
+      dispatch({ type: 'NET_RACE', leaderId: m.leaderId, bestMoves: m.bestMoves, timeLeft: m.timeLeft, total: m.total, path: m.path, par: m.par });
       break;
     case 'TICK':
       dispatch({ type: 'NET_TICK', timeLeft: m.timeLeft });

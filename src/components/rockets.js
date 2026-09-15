@@ -5,12 +5,14 @@ import redRocket from '../../asset/red_rocket.png';
 import blueRocket from '../../asset/blue_rocket.png';
 import greenRocket from '../../asset/green_rocket.png';
 import yellowRocket from '../../asset/yellow_rocket.png';
+import silverRocket from '../../asset/silver_rocket.png';
 
 export const ROCKET_IMG = {
   red: redRocket,
   blue: blueRocket,
   green: greenRocket,
   yellow: yellowRocket,
+  silver: silverRocket,
 };
 
 /** CSS/SVG rotation (deg, clockwise) so the nose faces the travel direction. */

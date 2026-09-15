@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { loadingVideo } from './theme.js';
 
 // Squadron lobby (neon command-deck styling): room code, roster with host
 // crown + kick buttons, and host-tunable mission parameters (debounced CONFIG).
@@ -97,11 +98,15 @@ export default function Lobby({ state, send, onLeave }) {
         <div className="cbtns">
           {isHost && (
             <button className="hud-btn primary" disabled={state.players.length < 1} onClick={() => send({ t: 'START' })}>
-              ▸ Launch mission
+              ▸ Launch mission{state.net?.arenaReady ? '' : '…'}
             </button>
           )}
           <button className="hud-btn ghost" onClick={onLeave}>Leave</button>
         </div>
+        <p className="muted">{state.net?.arenaReady ? '◆ Arena pre-built — launch is instant.' : '◇ Building arena…'}</p>
+        {!state.net?.arenaReady && (
+          <video className="hud-loading" src={loadingVideo} autoPlay loop muted playsInline aria-label="Building arena" />
+        )}
       </div>
     </div>
   );

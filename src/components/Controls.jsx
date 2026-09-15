@@ -17,6 +17,7 @@ export default function Controls({ onMove, onUndo, onReset, onGiveUp, canPlay, s
         <button className="ghost" onClick={onGiveUp} disabled={!canPlay}>Give up <kbd>G</kbd></button>
       </div>
       {selectedColor && <p className="muted">Selected: <b style={{ textTransform: 'capitalize' }}>{selectedColor}</b> robot — keys <b>1–{robotCount ?? 4}</b> switch rockets, click one, or use WASD/arrows to fly.</p>}
+      <p className="muted powers-legend">Red rams walls · Blue phases through one rammed wall/robot per slide · Green places blocks (1/round each) · Yellow bounces back when rammed into a wall · Silver moves cost 0.5</p>
     </div>
   );
 }

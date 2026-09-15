@@ -7,10 +7,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { WebSocketServer } from 'ws';
 import {
-  createRoom, joinRoom, startGame, roundPayload, removePlayer, updateConfig,
-  applyCount, applySolution, applyGiveUp, tickRoom, nextRound,
+  createRoom, joinRoom, startGame, startGamePredealt, setupBoard, roundPayload,
+  removePlayer, updateConfig,
+  applyCount, applySolution, applyGiveUp, tickRoom, nextRound, nextRoundPredealt,
 } from './rooms.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +21,40 @@ const DIST = path.join(ROOT, 'dist');
 const PORT = Number(process.env.PORT ?? 8787);
 
 const rooms = new Map(); // code -> room
+
+// Background map builder: one shared worker pre-solves each room's NEXT
+// round while the current one is played. Stale results are discarded via
+// per-room generation counters; sync deal is always the fallback.
+let dealWorker = null;
+try {
+  dealWorker = new Worker(new URL('./dealWorker.js', import.meta.url));
+  dealWorker.on('message', (msg) => {
+    if (!msg?.ok) return;
+    const code = String(msg.jobId ?? '').split(':')[0];
+    const room = rooms.get(code);
+    if (!room || room._dealGen !== msg.gen) return; // stale: newer job issued
+    room._pendingDeal = { deal: { robots: msg.robots, par: msg.par, deckPos: msg.deckPos }, forRound: room.round + 1 };
+  });
+  dealWorker.on('error', () => { dealWorker = null; });
+} catch {
+  dealWorker = null;
+}
+
+function queueNextDeal(room) {
+  room._pendingDeal = null;
+  if (!dealWorker) return;
+  room._dealGen = (room._dealGen ?? 0) + 1;
+  dealWorker.postMessage({
+    jobId: `${room.code}:${room.round + 1}`,
+    gen: room._dealGen,
+    walls: [...room.walls],
+    targets: room.targets,
+    deck: room.deck,
+    deckPos: room.deckPos + (room.config.targetCount ?? 1),
+    targetCount: room.config.targetCount ?? 1,
+    robotKinds: room.robotTemplate.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' })),
+  });
+}
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
@@ -74,7 +110,9 @@ function handle(ws, m) {
       const room = createRoom(m.name, m.cfg);
       rooms.set(room.code, room);
       attach(ws, room, room.hostId);
+      setupBoard(room); // arena exists from second zero…
       send(ws, welcome(room, room.hostId));
+      queueNextDeal(room); // …and round 1 pre-solves while players gather
       break;
     }
     case 'JOIN': {
@@ -96,23 +134,37 @@ function handle(ws, m) {
     case 'START': {
       const room = rooms.get(ws.roomCode);
       if (!room || ws.playerId !== room.hostId || room.phase !== 'lobby') return;
-      broadcast(room, startGame(room));
+      const p = room._pendingDeal;
+      room._pendingDeal = null;
+      // Pre-dealt round 1 while lobbying → launch is instant.
+      broadcast(room, (p && p.forRound === 1) ? startGamePredealt(room, p.deal) : startGame(room));
+      queueNextDeal(room); // pre-build round 2 while round 1 is played
       break;
     }
     case 'NEXT': {
       const room = rooms.get(ws.roomCode);
       if (!room || ws.playerId !== room.hostId || room.phase !== 'reveal') return;
-      const ev = nextRound(room);
+      const p = room._pendingDeal;
+      room._pendingDeal = null;
+      const ev = (p && p.forRound === room.round + 1)
+        ? nextRoundPredealt(room, p.deal)
+        : nextRound(room); // worker still busy → deal now (usual path for round 1)
       if (ev.type === 'gameover') broadcast(room, { t: 'GAMEOVER', scores: ev.scores });
-      else broadcast(room, ev); // ROUND payload
+      else {
+        broadcast(room, ev); // ROUND payload
+        queueNextDeal(room);
+      }
       break;
     }
     case 'CONFIG': {
       // Host tunes timer/rounds/robots/chaos while still in the lobby.
+      // Robot/wall changes rebuild the arena + restart the pre-deal.
       const room = rooms.get(ws.roomCode);
       if (!room || ws.playerId !== room.hostId || room.phase !== 'lobby') return;
       updateConfig(room, m.cfg);
+      setupBoard(room);
       broadcast(room, lobbyPayload(room));
+      queueNextDeal(room);
       break;
     }
     case 'KICK': {
@@ -139,7 +191,7 @@ function handle(ws, m) {
       if (room.phase !== 'thinking' && room.phase !== 'race') return;
       const ev = applySolution(room, ws.playerId, m.moves);
       broadcast(room, { t: 'PRESENCE', counts: presencePayload(room) });
-      if (ev.type === 'race' || ev.type === 'steal') broadcast(room, { t: 'RACE', ...ev.race });
+      if (ev.type === 'race' || ev.type === 'steal') broadcast(room, { t: 'RACE', ...ev.race, par: room.par });
       else if (ev.type === 'end') broadcast(room, { t: 'END', ...endPayload(ev) });
       else if (ev.type === 'rejected') send(ws, { t: 'ERROR', message: `Solution rejected (${ev.reason}).` });
       break;
@@ -201,6 +253,7 @@ function lobbyFields(room) {
     targetCount: room.config.targetCount ?? 1,
     raceSeconds: room.config.raceSeconds,
     chaos: room.config.chaos,
+    arenaReady: room.phase !== 'lobby' || !!room._pendingDeal,
   };
 }
 
@@ -221,7 +274,7 @@ function presencePayload(room) {
 }
 
 function endPayload(ev) {
-  return { winnerId: ev.winnerId, movesUsed: ev.movesUsed, reason: ev.reason, optimal: !!ev.optimal, scores: ev.scores, answer: ev.answer ?? null };
+  return { winnerId: ev.winnerId, movesUsed: ev.movesUsed, reason: ev.reason, optimal: !!ev.optimal, scores: ev.scores, answer: ev.answer ?? null, path: ev.path ?? null };
 }
 
 // Authoritative 1s race ticker.

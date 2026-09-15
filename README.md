@@ -19,7 +19,7 @@ npm start        # serve dist/ + rooms on one port (PORT env, default 8787)
 
 ## How a round works
 
-1. **Target revealed** — the matching-colour robot must reach the pulsing token. Rounds are re-dealt until the puzzle genuinely needs 6+ moves (or is beyond solver search).
+1. **Target revealed** — the matching-colour robot must reach the pulsing token. Rounds are re-dealt until the puzzle genuinely needs 6+ moves (or is beyond solver search). While you play, the *next* round is pre-built in a background worker, so advancing is instant (synchronous deal is the fallback). Room arenas are built at creation, so launching from the lobby is instant too.
 2. **Thinking (unlimited, sandbox)** — everyone experiments on a **private board copy**: moves count live, **Reset** restores the round start, all free. Sidebar shows every player's live count.
 3. **Race** — the first *validated* solve starts the **60s clock**; all players see `"<name> solved in N"`. A strictly **smaller** solve restarts the clock and steals the lead. A provably **optimal** solve (≤ solver par) wins **instantly** ⚡.
 4. **Solved → point**, next target. Winner: most targets after N rounds, or first to X points.
@@ -44,6 +44,17 @@ Pages can't run the rooms server, so host it free on Render (~5 min, one time):
 
 Notes: free Render sleeps after inactivity — the first Create/Join can take ~30s while it wakes; rooms are in-memory, so a sleep/restart drops active games. Warm it first by opening `https://rrbg-rooms.onrender.com/` once.
 
+## Controls
+
+- Click/tap a rocket to select (or keys 1–5), then: arrow keys / WASD, on-screen D-pad, or click a cell in the same row/column to slide toward it.
+- Rockets slide until a wall, the board edge, the walled 2×2 core, or another robot. Zero-displacement slides are rejected (except yellow's retreat and blue's ram-phase, below).
+- Rocket powers (red/green once per player per round, +1 move): **red** rams adjacent walls to breach them · **blue** phases through one rammed wall/robot per slide, then keeps sliding · **green** rams to drop a 1×1 block on the cell behind itself · **yellow** slides normally, except ramming an adjacent wall moves it one tile back instead of being illegal · **silver** has no power but each of its moves costs only 0.5. Undo pops powers back; first breach/block voids optimal for the round.
+- U undo · R reset · G give up.
+
+## Power tiles (temporarily shelved)
+
+Ice brakes, warp gates and white/yellow wall-switches are fully implemented but switched off via `POWER_TILES_ENABLED` in `src/game/board.js` — flip it back on to restore them, no other changes needed.
+
 ## Code map
 
 - `src/game/engine.js` — slide physics, legal-move validator, BFS solver/par
@@ -53,4 +64,4 @@ Notes: free Render sleeps after inactivity — the first Create/Join can take ~3
 - `server/rooms.js` + `server/index.js` — authoritative rooms (pure logic + ws/static host)
 - `src/net/socket.js` — rooms WS endpoint helper
 - `src/components/` — `Board.jsx` (SVG), `Sidebar.jsx` (sandbox meter, race clock, roster), `Controls.jsx`, `SetupScreen.jsx` (hot-seat + create/join), `Lobby.jsx`
-- `asset/` — rocket sprites, laser walls, vault asteroid, space backdrop
+- `asset/` — rocket sprites, laser walls, space backdrop

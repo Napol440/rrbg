@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ROBOT_FILL, ROBOT_DARK } from './colors.js';
 import { ROCKET_IMG, dirAngle } from './rockets.js';
-import { laserWall, asteroidImg, spaceBg, LASER_W, LASER_H } from './theme.js';
+import { laserWall, spaceBg, LASER_W, LASER_H, blockImg, TILE_IMG } from './theme.js';
 
 // SVG board: 16×16 cells over the space backdrop, laser edge walls,
 // asteroid vault, target tokens, rocket sprites (CSS-transform slide).
@@ -25,25 +25,53 @@ function TargetGlyph({ shape, color, active, dim }) {
   return <polygon points={pts} fill={fill} stroke={stroke} strokeWidth={3} strokeLinejoin="round" {...common} />;
 }
 
-// Convert the "x,y:DIR" wall set into laser-sprite placements.
+// Convert the "x,y:DIR" wall set into laser-sprite placements (key kept so
+// breached segments can be hidden).
 function wallSprites(walls) {
   const segs = [];
   for (const w of walls) {
     const [cell, dir] = w.split(':');
     const [x, y] = cell.split(',').map(Number);
-    if (dir === 'N') segs.push({ mx: (x + 0.5) * CELL, my: y * CELL, vertical: false });
-    else if (dir === 'S') segs.push({ mx: (x + 0.5) * CELL, my: (y + 1) * CELL, vertical: false });
-    else if (dir === 'W') segs.push({ mx: x * CELL, my: (y + 0.5) * CELL, vertical: true });
-    else if (dir === 'E') segs.push({ mx: (x + 1) * CELL, my: (y + 0.5) * CELL, vertical: true });
+    if (dir === 'N') segs.push({ key: w, mx: (x + 0.5) * CELL, my: y * CELL, vertical: false });
+    else if (dir === 'S') segs.push({ key: w, mx: (x + 0.5) * CELL, my: (y + 1) * CELL, vertical: false });
+    else if (dir === 'W') segs.push({ key: w, mx: x * CELL, my: (y + 0.5) * CELL, vertical: true });
+    else if (dir === 'E') segs.push({ key: w, mx: (x + 1) * CELL, my: (y + 0.5) * CELL, vertical: true });
   }
   return segs;
 }
 
+const REV_EDGE = { N: 'S', S: 'N', E: 'W', W: 'E' };
+const REV_STEP = { N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0] };
+
+// Same segment from the neighboring cell (wall keys come in either spelling).
+function reverseWallKey(key) {
+  const [cell, edge] = key.split(':');
+  const [x, y] = cell.split(',').map(Number);
+  const s = REV_STEP[edge];
+  if (!s) return key;
+  return `${x + s[0]},${y + s[1]}:${REV_EDGE[edge]}`;
+}
+
 const VAULT = 7 * CELL; // center 2×2 block origin (80×80 units)
 
-export default function Board({ walls, robots, targets, activeTargets, selectedId, onSelect, onMove, onCellAim, disabled, illegal }) {
+export default function Board({ walls, robots, targets, activeTargets, pathPreview, blocks, brokenWalls, tiles, collectedIds, selectedId, onSelect, onMove, onCellAim, disabled, illegal }) {
+  const collected = new Set(collectedIds ?? []);
+  const broken = useMemo(() => {
+    const s = new Set(brokenWalls ?? []);
+    // Breach entries may use either key spelling — hide both.
+    for (const k of [...s]) s.add(reverseWallKey(k));
+    return s;
+  }, [brokenWalls]);
   const [shake, setShake] = useState(0);
-  const segs = useMemo(() => wallSprites(walls), [walls]);
+  const segs = useMemo(() => wallSprites(walls).filter((sg) => !broken.has(sg.key)), [walls, broken]);
+  // Walled 2×2 core: long laser walls ringing the block (impassable).
+  const vaultSegs = [
+    { mx: 8 * CELL, my: 7 * CELL, vertical: false },
+    { mx: 8 * CELL, my: 9 * CELL, vertical: false },
+    { mx: 7 * CELL, my: 8 * CELL, vertical: true },
+    { mx: 9 * CELL, my: 8 * CELL, vertical: true },
+  ];
+  const VAULT_LASER = 2 * CELL; // full 2-cell edge
 
   // Replay a shake animation whenever an illegal slide is rejected.
   useEffect(() => {
@@ -73,7 +101,7 @@ export default function Board({ walls, robots, targets, activeTargets, selectedI
             y={y * CELL}
             width={CELL}
             height={CELL}
-            className={center ? 'cell vault' : 'cell'}
+            className={center ? 'cell vaultwall' : 'cell'}
             onClick={() => onCellAim?.(x, y)}
           />
         );
@@ -85,13 +113,30 @@ export default function Board({ walls, robots, targets, activeTargets, selectedI
           <line x1={0} y1={i * CELL} x2={W} y2={i * CELL} />
         </g>
       ))}
-      {/* center-vault asteroid over the 2×2 block (1.3× for presence) */}
-      <image href={asteroidImg} x={VAULT - 14.6} y={VAULT - 14.6} width={109.2} height={109.2} preserveAspectRatio="xMidYMid meet" />
+      {/* walled 2×2 core (impassable) */}
+      {vaultSegs.map((sg, i) => (
+        sg.vertical ? (
+          <g key={i} transform={`translate(${sg.mx},${sg.my}) rotate(90)`}>
+            <image className="laser" href={laserWall} x={-VAULT_LASER / 2} y={-LASER_H / 2} width={VAULT_LASER} height={LASER_H} preserveAspectRatio="none" />
+          </g>
+        ) : (
+          <image key={i} className="laser" href={laserWall} x={sg.mx - VAULT_LASER / 2} y={sg.my - LASER_H / 2} width={VAULT_LASER} height={LASER_H} preserveAspectRatio="none" />
+        )
+      ))}
+      {/* power tiles (ice brakes, warp gates, white/yellow switches) */}
+      {(tiles ?? []).map((t) => (
+        TILE_IMG[t.kind] ? (
+          <image
+            key={t.id} href={TILE_IMG[t.kind]}
+            x={t.x * CELL + 2} y={t.y * CELL + 2} width={CELL - 4} height={CELL - 4}
+            preserveAspectRatio="xMidYMid meet" className={t.kind === 'white' || t.kind === 'yellow' ? 'switch-tile' : 'power-tile'}
+          />
+        ) : null
+      ))}
       {/* active targets only — the round's objectives, glowing */}
-      {targets.filter((t) => !activeTargets || activeTargets.some((a) => a.id === t.id)).map((t) => (
+      {targets.filter((t) => (!activeTargets || activeTargets.some((a) => a.id === t.id)) && !collected.has(t.id)).map((t) => (
         <g key={t.id} className="target-active" transform={`translate(${t.x * CELL},${t.y * CELL})`}>
           <TargetGlyph shape={t.shape} color={t.color} />
-          <rect x={2} y={2} width={CELL - 4} height={CELL - 4} className="active-ring" />
         </g>
       ))}
       {/* walls as laser segments on the cell edges */}
@@ -105,6 +150,32 @@ export default function Board({ walls, robots, targets, activeTargets, selectedI
         )
       ))}
       <rect x={1} y={1} width={W - 2} height={W - 2} className="border" />
+      {/* placed green blocks (terrain from this sandbox's history) */}
+      {(blocks ?? []).map((b, i) => (
+        <image key={`block-${b.x}-${b.y}-${i}`} href={blockImg} x={b.x * CELL + 2} y={b.y * CELL + 2} width={CELL - 4} height={CELL - 4} preserveAspectRatio="xMidYMid meet" className="placed-block" />
+      ))}
+      {/* lead/winning line: numbered stops of the lowest-move solve */}
+      {pathPreview?.length > 0 && (
+        <g className="path-preview" style={{ pointerEvents: 'none' }}>
+          <polyline
+            points={pathPreview.map((p) => `${p.x * CELL + CELL / 2},${p.y * CELL + CELL / 2}`).join(' ')}
+            className="path-line"
+          />
+          {pathPreview.map((p) => (
+            p.kind === 'block' ? (
+              <g key={p.n} transform={`translate(${p.x * CELL + CELL / 2},${p.y * CELL + CELL / 2})`}>
+                <image href={blockImg} x={-11} y={-11} width={22} height={22} preserveAspectRatio="xMidYMid meet" className="path-block" />
+                <text y={3.5} textAnchor="middle" className="path-num">{p.n}</text>
+              </g>
+            ) : (
+              <g key={p.n} transform={`translate(${p.x * CELL + CELL / 2},${p.y * CELL + CELL / 2})`}>
+                <circle r={9} className="path-dot" />
+                <text y={3.5} textAnchor="middle" className="path-num">{p.n}</text>
+              </g>
+            )
+          ))}
+        </g>
+      )}
       {/* robots as rocket sprites (dot fallback for colours without art) */}
       {robots.map((r) => {
         const img = ROCKET_IMG[r.color];

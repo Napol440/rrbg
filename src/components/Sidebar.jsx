@@ -1,11 +1,17 @@
 import { RACE_SECONDS } from '../game/race.js';
 import { activeTargets, activeMovesUsed } from '../state/useGame.js';
+import { chargesUsed } from '../game/engine.js';
 import { ROBOT_FILL } from './colors.js';
 
 // Right-hand panel: target card, sandbox meter, race clock, roster, scoreboard.
-export default function Sidebar({ state, dispatch, send }) {
+export default function Sidebar({ state, dispatch, send, onNextRound, showPath, onTogglePath }) {
+  const next = onNextRound ?? (() => dispatch({ type: 'NEXT_ROUND' }));
+  const hasLeadLine = (state.phase === 'race' && (state.race?.path?.length ?? 0) > 0)
+    || (state.phase === 'reveal' && (state.lastResult?.path?.length ?? 0) > 0);
   const targets = activeTargets(state);
   const multi = targets.length > 1;
+  const selfPid = state.mode === 'net' ? state.net?.you : state.viewAs;
+  const collected = new Set((selfPid && state.sandboxes[selfPid]?.collected) ?? []);
   const name = (id) => state.players.find((p) => p.id === id)?.name ?? id;
   const solo = state.players.length === 1 && state.mode === 'local';
   const myMoves = activeMovesUsed(state);
@@ -14,11 +20,12 @@ export default function Sidebar({ state, dispatch, send }) {
   return (
     <aside className="side">
       <section className="card target-card">
-        <h2>Round {state.round}/{state.roundsTotal} · Target{multi ? 's — cover them all' : ''}</h2>
+        <h2>Round {state.round}/{state.roundsTotal} · Target{multi ? `s — ${collected.size}/${targets.length} collected` : ''}</h2>
         {targets.length ? targets.map((t) => (
           <div key={t.id} className="targetline">
             <span className="swatch" style={{ background: ROBOT_FILL[t.color] }} />
             <b style={{ textTransform: 'capitalize' }}>{t.color} {t.shape}</b>
+            {multi && collected.has(t.id) && <span> ✓</span>}
           </div>
         )) : <p className="muted">No target.</p>}
         {!multi && state.par != null && (
@@ -43,22 +50,37 @@ export default function Sidebar({ state, dispatch, send }) {
               : 'Race is on — keep optimizing, a smaller solve steals the lead.'}
           </p>
           {state.phase === 'race' && state.race && (
-            <div className="clockbar low">
-              <div className="fill" style={{ width: `${(state.race.timeLeft / (state.race.total ?? RACE_SECONDS)) * 100}%` }} />
-              <span>{name(state.race.leaderId)} leads with {state.race.bestMoves} · {state.race.timeLeft}s left</span>
-            </div>
+            <>
+              <div className="clockbar low">
+                <div className="fill" style={{ width: `${(state.race.timeLeft / (state.race.total ?? RACE_SECONDS)) * 100}%` }} />
+                <span>{name(state.race.leaderId)} leads with {state.race.bestMoves}{!multi && state.par != null && <> · optimal {state.par}</>} · {state.race.timeLeft}s left</span>
+              </div>
+              {hasLeadLine && (
+                <div className="cbtns">
+                  <button className="ghost" onClick={onTogglePath}>👁 {showPath ? 'Hide' : 'Show'} lead line</button>
+                </div>
+              )}
+            </>
           )}
           {!solo && (
             <>
               <ul className="bids">
                 {rows.map((p) => {
                   const r = state.roster[p.id] ?? {};
+                  const isSelf = (state.mode === 'net' ? state.net?.you : state.viewAs) === p.id;
+                  const spent = isSelf
+                    ? chargesUsed(state.sandboxes[p.id]?.history)
+                    : { breach: r.powers?.breach ? 1 : 0, block: r.powers?.block ? 1 : 0 };
                   return (
                     <li key={p.id}>
                       <span className="dot" style={{ background: p.color }} />{p.name}: <b>{r.movesUsed ?? 0}</b>
                       {r.solved && r.best != null && <span className="muted"> · solved {r.best}</span>}
                       {r.givenUp && <span className="muted"> · gave up</span>}
                       {state.race?.leaderId === p.id && <span> 👑</span>}
+                      <span className="pips" title="Red breach / Green block">
+                        <span className={spent.breach ? 'pip spent' : 'pip'} style={{ background: '#e5484d' }} />
+                        <span className={spent.block ? 'pip spent' : 'pip'} style={{ background: '#46a758' }} />
+                      </span>
                     </li>
                   );
                 })}
@@ -86,8 +108,13 @@ export default function Sidebar({ state, dispatch, send }) {
         <section className="card">
           <h2>Round result</h2>
           {state.lastResult.winnerId
-            ? <p><b>{name(state.lastResult.winnerId)}</b> solved it in {state.lastResult.movesUsed}!{state.lastResult.optimal && <> ⚡ <b>Optimal!</b></>}</p>
+            ? <p><b>{name(state.lastResult.winnerId)}</b> solved it in {state.lastResult.movesUsed}{!multi && state.par != null && !state.lastResult.optimal && <> (optimal {state.par})</>}!{state.lastResult.optimal && <> ⚡ <b>Optimal!</b></>}</p>
             : <p className="muted">Unsolved ({state.lastResult.reason}). No points.</p>}
+          {state.lastResult.winnerId && hasLeadLine && (
+            <div className="cbtns">
+              <button className="ghost" onClick={onTogglePath}>👁 {showPath ? 'Hide' : 'Show'} winning line</button>
+            </div>
+          )}
           {!state.lastResult.winnerId && (state.lastResult.answer?.length ?? 0) > 0 && (
             <>
               <p className="muted">Answer in {state.lastResult.answer.length}{(state.answerIdx ?? 0) < state.lastResult.answer.length ? ' — playing…' : ' — done.'}</p>
@@ -100,7 +127,7 @@ export default function Sidebar({ state, dispatch, send }) {
             <p className="muted">No answer within solver search.</p>
           )}
           {(state.mode === 'local' || state.net?.isHost) && (
-            <button className="primary" onClick={() => { if (state.mode === 'net') send?.({ t: 'NEXT' }); dispatch({ type: 'NEXT_ROUND' }); }}>Next target →</button>
+            <button className="primary" onClick={next}>Next target →</button>
           )}
           {state.mode === 'net' && !state.net?.isHost && (
             <p className="muted">Waiting for host to start the next target…</p>

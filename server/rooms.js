@@ -3,10 +3,9 @@
 // clock, and solution validation; clients only hold private sandboxes and
 // send move COUNTS + claimed SOLUTIONS.
 
-import { buildBoard, placeRobots, makeDeck } from '../src/game/board.js';
-import { solveMinMoves } from '../src/game/engine.js';
-import { isOptimalSolve, validateSolution, meetsMinPar, MAX_DEAL_ATTEMPTS } from '../src/game/race.js';
-import { solvePath } from '../src/game/engine.js';
+import { buildBoard, placeRobots, makeDeck, pickActiveTargets, scatterRobots, generateTiles, POWER_TILES_ENABLED } from '../src/game/board.js';
+import { solvePath, terrainOpts } from '../src/game/engine.js';
+import { isOptimalSolve, validateSolution, findDeal, cleanMove } from '../src/game/race.js';
 
 const PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
 
@@ -53,7 +52,7 @@ export function joinRoom(room, name) {
   const player = { id, name: name?.trim() || `Player ${room.players.length + 1}`, color: PALETTE[room.players.length % PALETTE.length] };
   room.players.push(player);
   room.scores[id] = 0;
-  room.presence[id] = { movesUsed: 0, solved: false, best: null, givenUp: false };
+  room.presence[id] = { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } };
   return { player };
 }
 
@@ -79,46 +78,81 @@ export function removePlayer(room, pid) {
 }
 
 export function startGame(room) {
+  setupBoard(room);
+  return beginRound(room);
+}
+
+/** Build the arena immediately (fast: no solving) so round 1 can pre-deal
+ * while players gather in the lobby. Safe to call again — rebuilds fresh. */
+export function setupBoard(room) {
   const board = buildBoard({ robotCount: room.config.robotCount, randomExtraWalls: room.config.chaos });
   placeRobots(board);
   room.walls = board.walls;
+  room.wallsAlt = board.wallsAlt;
   room.targets = board.targets;
+  room.tiles = POWER_TILES_ENABLED ? generateTiles(board.targets, board.robots) : [];
   room.deck = makeDeck(board.targets);
   room.deckPos = 0;
   room.round = 0;
   room.robotTemplate = board.robots.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' }));
   room.scores = Object.fromEntries(room.players.map((p) => [p.id, 0]));
-  return beginRound(room);
 }
 
-export function beginRound(room) {
-  room.round += 1;
-  // Re-scatter until the puzzle needs MIN_ROUND_PAR moves (or is beyond
-  // solver search — accepted as hard enough). Multi-target rounds skip par.
-  const actives = roomActiveTargets(room);
-  for (let attempt = 0; attempt < MAX_DEAL_ATTEMPTS; attempt++) {
-    room.startRobots = scatter(room);
-    room.par = actives.length === 1 ? solveMinMoves(room.walls, room.startRobots, actives[0]) : null;
-    if (meetsMinPar(room.par)) break;
+/**
+ * Instant start using the lobby pre-deal. Late joiners are fine: only
+ * robots/par/positions are reused, rosters/scores build from whoever is
+ * present. Falls back to a fresh sync deal on corrupt payloads.
+ */
+export function startGamePredealt(room, deal) {
+  if (!deal || !Array.isArray(deal.robots) || !deal.robots.length || !Number.isFinite(deal.deckPos)) {
+    return startGame(room);
   }
+  room.scores = Object.fromEntries(room.players.map((p) => [p.id, 0]));
+  room.round = 1;
+  room.startRobots = deal.robots;
+  room.par = deal.par ?? null;
+  room.deckPos = deal.deckPos;
   room.phase = 'thinking';
   room.race = null;
   room.presence = Object.fromEntries(
-    room.players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false }]),
+    room.players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } }]),
   );
   return roundPayload(room);
 }
 
-/** Active target set: targetCount consecutive deck entries. */
+export function beginRound(room) {
+  room.round += 1;
+  // Shared budgeted search: proven 6+ lines preferred, sealed-looking
+  // targets skipped (deckPos may advance), multi-target single-scattered.
+  const kinds = room.robotTemplate.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' }));
+  const tileCells = (room.tiles ?? []).map((t) => `${t.x},${t.y}`);
+  const found = findDeal(
+    {
+      walls: room.walls,
+      targets: room.targets,
+      deck: room.deck,
+      deckPos: room.deckPos,
+      targetCount: room.config.targetCount ?? 1,
+      robotKinds: kinds,
+      tiles: room.tiles ?? [],
+      terrain: terrainOpts(room.tiles ?? []),
+    },
+    { scatter: (ks) => scatterRobots(ks.map((k) => ({ ...k })), room.targets, tileCells) },
+  );
+  room.startRobots = found.robots;
+  room.par = found.par;
+  room.deckPos = found.deckPos;
+  room.phase = 'thinking';
+  room.race = null;
+  room.presence = Object.fromEntries(
+    room.players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } }]),
+  );
+  return roundPayload(room);
+}
+
+/** Active target set: distinct-colour deck entries. */
 export function roomActiveTargets(room) {
-  const out = [];
-  if (!room.deck.length) return out;
-  const count = room.config.targetCount ?? 1;
-  for (let k = 0; k < count; k++) {
-    const t = room.targets[room.deck[(room.deckPos + k) % room.deck.length]];
-    if (t) out.push(t);
-  }
-  return out;
+  return pickActiveTargets(room.targets, room.deck, room.deckPos, room.config.targetCount ?? 1);
 }
 
 export function roundPayload(room) {
@@ -130,6 +164,8 @@ export function roundPayload(room) {
     raceSeconds: room.config.raceSeconds,
     targetCount: room.config.targetCount ?? 1,
     walls: [...room.walls],
+    wallsAlt: [...(room.wallsAlt ?? [])],
+    tiles: (room.tiles ?? []).map((t) => ({ ...t })),
     targets: room.targets,
     deck,
     deckPos: 0,
@@ -141,30 +177,39 @@ export function roundPayload(room) {
 }
 
 export function applyCount(room, pid, moves) {
-  if (room.presence[pid]) room.presence[pid].movesUsed = Math.max(0, Math.min(500, moves | 0));
+  if (room.presence[pid]) room.presence[pid].movesUsed = Math.max(0, Math.min(500, Math.round(moves * 2) / 2));
 }
 
 export function applySolution(room, pid, moves) {
-  const v = validateSolution(room.walls, room.startRobots, roomActiveTargets(room), moves);
+  const pres = room.presence[pid];
+  const spent = { breach: pres?.powers?.breach ? 1 : 0, block: pres?.powers?.block ? 1 : 0 };
+  const v = validateSolution(room.walls, room.startRobots, roomActiveTargets(room), moves, {
+    spent,
+    altWalls: [...(room.wallsAlt ?? [])],
+    tiles: (room.tiles ?? []).map((t) => ({ ...t })),
+  });
   if (!v.ok) return { type: 'rejected', reason: v.reason };
   const n = v.moves;
-  const pres = room.presence[pid];
+  const used = powersIn(moves);
   if (pres) {
     pres.solved = true;
     pres.best = Math.min(n, pres.best ?? Infinity);
     pres.movesUsed = n;
+    pres.powers = { breach: !!(pres.powers?.breach || used.breach), block: !!(pres.powers?.block || used.block) };
   }
+  // Breach/block/flip lines are unmodeled: void par (no more instant wins).
+  if (used.breach || used.block || (v.flips | 0) > 0) room.par = null;
   // Provably optimal → instant win.
   if (isOptimalSolve(n, room.par)) {
-    return finishRound(room, pid, n, true);
+    return finishRound(room, pid, n, true, pathOf(moves));
   }
   if (room.phase === 'thinking') {
     room.phase = 'race';
-    room.race = { leaderId: pid, bestMoves: n, timeLeft: room.config.raceSeconds, total: room.config.raceSeconds };
+    room.race = { leaderId: pid, bestMoves: n, timeLeft: room.config.raceSeconds, total: room.config.raceSeconds, path: pathOf(moves) };
     return { type: 'race', race: { ...room.race } };
   }
   if (room.phase === 'race' && n < room.race.bestMoves) {
-    room.race = { leaderId: pid, bestMoves: n, timeLeft: room.config.raceSeconds, total: room.config.raceSeconds };
+    room.race = { leaderId: pid, bestMoves: n, timeLeft: room.config.raceSeconds, total: room.config.raceSeconds, path: pathOf(moves) };
     return { type: 'steal', race: { ...room.race } };
   }
   return { type: 'ack', best: room.race?.bestMoves ?? null };
@@ -175,7 +220,7 @@ export function applyGiveUp(room, pid) {
   // Race: the shortest solver wins as soon as everyone else gives up.
   if (room.phase === 'race' && room.race) {
     const rivalsIn = Object.entries(room.presence).some(([id, r]) => id !== room.race.leaderId && !r.givenUp);
-    if (!rivalsIn) return finishRound(room, room.race.leaderId, room.race.bestMoves, false);
+    if (!rivalsIn) return finishRound(room, room.race.leaderId, room.race.bestMoves, false, room.race.path ?? null);
     return { type: 'ok' };
   }
   const all = Object.values(room.presence);
@@ -183,7 +228,10 @@ export function applyGiveUp(room, pid) {
     // Nobody solved it: attach the solver's answer for single-target rounds
     // (null for multi-target or beyond-search) so clients can play it back.
     const actives = roomActiveTargets(room);
-    const answer = actives.length === 1 ? solvePath(room.walls, room.startRobots, actives[0]) : null;
+    const ground = terrainOpts(room.tiles ?? []);
+    const answer = actives.length === 1
+      ? solvePath(room.walls, room.startRobots, actives[0], 9, 120000, ground)
+      : null;
     room.phase = 'reveal';
     return { type: 'end', winnerId: null, reason: 'gave-up', scores: { ...room.scores }, answer };
   }
@@ -194,11 +242,41 @@ export function applyGiveUp(room, pid) {
 export function tickRoom(room) {
   if (room.phase !== 'race' || !room.race) return null;
   room.race.timeLeft -= 1;
-  if (room.race.timeLeft <= 0) return finishRound(room, room.race.leaderId, room.race.bestMoves, false);
+  if (room.race.timeLeft <= 0) return finishRound(room, room.race.leaderId, room.race.bestMoves, false, room.race.path ?? null);
   return { type: 'tick', timeLeft: room.race.timeLeft };
 }
 
 export function nextRound(room) {
+  const over = checkGameOver(room);
+  if (over) return over;
+  room.deckPos += room.config.targetCount ?? 1;
+  room.phase = 'thinking';
+  return beginRound(room);
+}
+
+/**
+ * Instant advance using a background pre-deal. Same win checks as nextRound;
+ * the payload is self-consistent (robots/par paired with its own deckPos).
+ */
+export function nextRoundPredealt(room, deal) {
+  const over = checkGameOver(room);
+  if (over) return over;
+  if (!deal || !Array.isArray(deal.robots) || !deal.robots.length || !Number.isFinite(deal.deckPos)) {
+    return nextRound(room); // corrupt payload → sync deal instead
+  }
+  room.deckPos = deal.deckPos;
+  room.round += 1;
+  room.startRobots = deal.robots;
+  room.par = deal.par ?? null;
+  room.phase = 'thinking';
+  room.race = null;
+  room.presence = Object.fromEntries(
+    room.players.map((p) => [p.id, { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } }]),
+  );
+  return roundPayload(room);
+}
+
+function checkGameOver(room) {
   if (room.config.pointsToWin > 0) {
     const champ = room.players.find((p) => (room.scores[p.id] ?? 0) >= room.config.pointsToWin);
     if (champ) {
@@ -210,36 +288,30 @@ export function nextRound(room) {
     room.phase = 'over';
     return { type: 'gameover', scores: { ...room.scores } };
   }
-  room.deckPos += room.config.targetCount ?? 1;
-  room.phase = 'thinking';
-  return beginRound(room);
+  return null;
 }
 
-function finishRound(room, winnerId, movesUsed, optimal) {
+// Power kinds already spent inside a submitted move list.
+function powersIn(moves) {
+  let breach = false;
+  let block = false;
+  for (const m of moves ?? []) {
+    if (m.kind === 'breach') breach = true;
+    else if (m.kind === 'block') block = true;
+  }
+  return { breach, block };
+}
+
+function finishRound(room, winnerId, movesUsed, optimal, path = null) {
   room.scores[winnerId] = (room.scores[winnerId] ?? 0) + 1;
   room.phase = 'reveal';
   room.race = null;
-  return { type: 'end', winnerId, movesUsed, reason: 'solved', optimal, scores: { ...room.scores } };
+  return { type: 'end', winnerId, movesUsed, reason: 'solved', optimal, path, scores: { ...room.scores } };
 }
 
-function scatter(room) {
-  // Fresh scatter every round from the robot template (ids/colors only).
-  const robots = (room.robotTemplate ?? []).map((r) => ({ ...r }));
-  // Robots never spawn on ANY target cell — not even the goal.
-  const taken = new Set(room.targets.map((t) => `${t.x},${t.y}`));
-  for (const r of robots) {
-    for (let tries = 0; tries < 500; tries++) {
-      const x = Math.floor(Math.random() * 16);
-      const y = Math.floor(Math.random() * 16);
-      if ((x >= 7 && x <= 8 && y >= 7 && y <= 8) || taken.has(`${x},${y}`)) continue;
-      taken.add(`${x},${y}`);
-      r.x = x;
-      r.y = y;
-      r.dir = 'up';
-      break;
-    }
-  }
-  return robots;
+// Sanitized winning line for broadcast (validated moves only).
+function pathOf(moves) {
+  return moves.map(cleanMove);
 }
 
 function clampInt(v, min, max, dflt) {
