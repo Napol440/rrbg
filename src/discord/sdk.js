@@ -35,11 +35,6 @@ export function apiTokenUrl() {
   return '/api/token';
 }
 
-function apiTokenFallbacks() {
-  if (!shouldUseDiscord()) return ['/api/token'];
-  return ['/.proxy/api/token', '/api/token'];
-}
-
 // Rooms WS: standalone uses roomWsUrl(); Discord uses the mapped proxy path.
 // Uses whichever prefix form the token exchange proved working.
 export function discordWsUrl() {
@@ -48,9 +43,44 @@ export function discordWsUrl() {
   return null;
 }
 
-// Set by postTokenWithFallback: '/.proxy' or '' depending on which form the
-// Discord proxy actually routes to our server.
+// Set by discoverProxyPrefix: '/.proxy' or '' depending on which form the
+// Discord proxy actually routes to our server. Discovered via /api/health
+// before any token exchange, so auth + WS always use a proven path.
 let workingProxyPrefix = '/.proxy';
+
+async function probePrefix(prefix) {
+  try {
+    const res = await fetch(`${prefix}/api/health`, { method: 'GET' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function discoverProxyPrefix() {
+  if (!shouldUseDiscord()) {
+    workingProxyPrefix = '';
+    return '';
+  }
+  for (const prefix of ['/.proxy', '']) {
+    if (await probePrefix(prefix)) {
+      workingProxyPrefix = prefix;
+      return prefix;
+    }
+  }
+  // Neither answered (yet) — default to /.proxy; the token step below
+  // retries both and reports exactly what each returned.
+  workingProxyPrefix = '/.proxy';
+  return '/.proxy';
+}
+
+function apiTokenFallbacks() {
+  if (!shouldUseDiscord()) return ['/api/token'];
+  const alt = workingProxyPrefix === '/.proxy' ? '' : '/.proxy';
+  return [`${workingProxyPrefix}/api/token`, `${alt}/api/token`];
+}
 
 // Full Discord handshake: ready → authorize → server token exchange →
 // authenticate. Returns { sdk, auth, context } where context has
@@ -78,6 +108,7 @@ export async function handshakeDiscord() {
     scope: ['identify'],
   });
 
+  await discoverProxyPrefix();
   const res = await postTokenWithFallback(code);
   const { access_token } = await res.json();
   const auth = await sdk.commands.authenticate({ access_token });

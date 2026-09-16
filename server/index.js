@@ -64,13 +64,25 @@ const server = http.createServer((req, res) => {
   let urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   // Discord proxy: `/.proxy/api/token` arrives either stripped (/api/token)
   // or intact (/.proxy/api/token) depending on mapping — normalize both.
-  const apiPath = urlPath.startsWith('/.proxy/') ? urlPath.slice('/.proxy'.length) : urlPath;
+  // Trailing slashes are tolerated (some proxies normalize them in).
+  let apiPath = urlPath.startsWith('/.proxy/') ? urlPath.slice('/.proxy'.length) : urlPath;
+  if (apiPath.length > 1 && apiPath.endsWith('/')) apiPath = apiPath.slice(0, -1);
+  const CORS = {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'Content-Type',
+  };
+  if (apiPath.startsWith('/api/') && req.method === 'OPTIONS') {
+    res.writeHead(204, CORS);
+    res.end();
+    return;
+  }
   if (apiPath === '/api/token' && req.method === 'POST') {
     handleTokenExchange(req, res);
     return;
   }
   if (apiPath === '/api/health') {
-    res.writeHead(200, { 'content-type': 'application/json' });
+    res.writeHead(200, { 'content-type': 'application/json', ...CORS });
     res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
     return;
   }
@@ -121,10 +133,16 @@ function handleTokenExchange(req, res) {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error_description ?? 'discord token exchange failed');
-      res.writeHead(200, { 'content-type': 'application/json' });
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+      });
       res.end(JSON.stringify({ access_token: data.access_token }));
     } catch (err) {
-      res.writeHead(400, { 'content-type': 'application/json' });
+      res.writeHead(400, {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+      });
       res.end(JSON.stringify({ error: String(err?.message ?? err) }));
     }
   });
