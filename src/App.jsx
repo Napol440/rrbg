@@ -368,6 +368,9 @@ export default function App() {
             onCellAim={onCellAim}
             illegal={state.illegal}
           />
+        </div>
+        <div className="sidecol">
+          <Sidebar state={state} dispatch={dispatch} send={netAction} onNextRound={onNextRound} showPath={showPath} onTogglePath={() => setShowPath((v) => !v)} />
           <Controls
             onMove={play}
             onUndo={() => dispatch({ type: 'UNDO' })}
@@ -378,7 +381,6 @@ export default function App() {
             robotCount={robots.length}
           />
         </div>
-        <Sidebar state={state} dispatch={dispatch} send={netAction} onNextRound={onNextRound} showPath={showPath} onTogglePath={() => setShowPath((v) => !v)} />
       </main>
     </div>
   );
