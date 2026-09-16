@@ -28,7 +28,20 @@ body {
 }
 
 /* ── board ── */
-.board { width: 100%; height: auto; background-color: #0b0e1a; background-size: cover; background-position: center; border-radius: 8px; touch-action: manipulation; }
+.board {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Discord Activity iframes are short: cap the square board by viewport
+     height too (topbar + controls + padding ≈ 280px), so the full 16×16
+     grid fits without scrolling. Aspect ratio is preserved by the SVG. */
+  max-height: calc(100vh - 280px);
+  max-height: calc(100dvh - 280px);
+  max-width: calc(100vh - 280px);
+  max-width: calc(100dvh - 280px);
+  margin: 0 auto;
+  background-color: #0b0e1a; background-size: cover; background-position: center; border-radius: 8px; touch-action: manipulation;
+}
 .board .cell { fill: rgba(8, 10, 18, 0.45); }
 .board .cell.vault { fill: transparent; }
 .board .cell.vaultwall { fill: #232833; }
@@ -155,4 +168,19 @@ button.ghost { background: transparent; }
 @media (max-width: 600px) {
   .dpad { grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px); }
   .names, .grid2 { grid-template-columns: 1fr; }
+}
+
+/* ── short viewports (Discord Activity iframe) ── */
+@media (max-height: 750px) {
+  .wrap { padding: 8px 12px 16px; }
+  .topbar { margin-bottom: 8px; padding-bottom: 6px; }
+  .layout { gap: 10px; }
+  .boardcol { gap: 8px; }
+  .side { gap: 8px; }
+  .card { padding: 8px 10px; }
+  .bigmeter { font-size: 18px; }
+  .setup { padding: 14px 16px; gap: 8px; }
+  .hud { padding: 12px 16px 14px; gap: 8px; }
+  .controls { padding: 8px 10px; gap: 10px; }
+  .dpad { grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(2, 40px); }
 }
