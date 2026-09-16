@@ -6,6 +6,7 @@
 import { buildBoard, placeRobots, makeDeck, pickActiveTargets, scatterRobots, generateTiles, POWER_TILES_ENABLED } from '../src/game/board.js';
 import { solvePath, terrainOpts } from '../src/game/engine.js';
 import { isOptimalSolve, validateSolution, findDeal, cleanMove } from '../src/game/race.js';
+import { MIN_HARD_ROBOTS } from '../src/game/engine.js';
 
 const PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
 
@@ -19,9 +20,10 @@ export function makeCode() {
 export function createRoom(name, cfg = {}) {
   const room = {
     code: makeCode(),
+    instanceId: cfg.instanceId ?? null, // Discord Activity channel instance
     hostId: 'p0',
     nextId: 1,
-    players: [{ id: 'p0', name: name?.trim() || 'Host', color: PALETTE[0] }],
+    players: [{ id: 'p0', name: name?.trim() || 'Host', color: PALETTE[0], discordId: cfg.discordId ?? null, avatar: cfg.avatar ?? null }],
     conns: new Map(),
     config: {
       roundsTotal: clampInt(cfg.roundsTotal, 1, 40, 15),
@@ -30,6 +32,7 @@ export function createRoom(name, cfg = {}) {
       chaos: !!cfg.chaos,
       raceSeconds: clampInt(cfg.raceSeconds, 10, 300, 60),
       targetCount: clampInt(cfg.targetCount, 1, 3, 1),
+      hardMode: !!cfg.hardMode,
     },
     round: 0,
     walls: new Set(),
@@ -56,6 +59,37 @@ export function joinRoom(room, name) {
   return { player };
 }
 
+// Discord Activity auto-join: same voice/channel instance shares one room.
+// Reattaches a reconnecting Discord user (same discordId) instead of adding
+// a duplicate seat; otherwise falls back to a normal join.
+export function joinInstanceRoom(room, { discordId = null, name = '', avatar = null } = {}) {
+  if (discordId) {
+    const existing = room.players.find((p) => p.discordId === discordId);
+    if (existing) {
+      if (name?.trim()) existing.name = name.trim().slice(0, 24);
+      if (avatar) existing.avatar = avatar;
+      if (!room.presence[existing.id]) {
+        room.presence[existing.id] = { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } };
+      }
+      if (!(existing.id in room.scores)) room.scores[existing.id] = 0;
+      return { player: existing, reattached: true };
+    }
+  }
+  if (room.players.length >= 6) return { error: 'Room is full (6 max).' };
+  const id = `p${room.nextId++}`;
+  const player = {
+    id,
+    name: name?.trim().slice(0, 24) || `Player ${room.players.length + 1}`,
+    color: PALETTE[room.players.length % PALETTE.length],
+    discordId,
+    avatar,
+  };
+  room.players.push(player);
+  room.scores[id] = 0;
+  room.presence[id] = { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } };
+  return { player, reattached: false };
+}
+
 // Host-tunable settings (lobby phase only — caller enforces).
 export function updateConfig(room, cfg = {}) {
   if (cfg.roundsTotal !== undefined) room.config.roundsTotal = clampInt(cfg.roundsTotal, 1, 40, 15);
@@ -63,6 +97,7 @@ export function updateConfig(room, cfg = {}) {
   if (cfg.chaos !== undefined) room.config.chaos = !!cfg.chaos;
   if (cfg.raceSeconds !== undefined) room.config.raceSeconds = clampInt(cfg.raceSeconds, 10, 300, 60);
   if (cfg.targetCount !== undefined) room.config.targetCount = clampInt(cfg.targetCount, 1, 3, 1);
+  if (cfg.hardMode !== undefined) room.config.hardMode = !!cfg.hardMode;
   return { ...room.config };
 }
 
@@ -136,6 +171,7 @@ export function beginRound(room) {
       robotKinds: kinds,
       tiles: room.tiles ?? [],
       terrain: terrainOpts(room.tiles ?? []),
+      hardMode: !!room.config.hardMode,
     },
     { scatter: (ks) => scatterRobots(ks.map((k) => ({ ...k })), room.targets, tileCells) },
   );
@@ -163,6 +199,7 @@ export function roundPayload(room) {
     roundsTotal: room.config.roundsTotal,
     raceSeconds: room.config.raceSeconds,
     targetCount: room.config.targetCount ?? 1,
+    hardMode: !!room.config.hardMode,
     walls: [...room.walls],
     wallsAlt: [...(room.wallsAlt ?? [])],
     tiles: (room.tiles ?? []).map((t) => ({ ...t })),
@@ -187,6 +224,7 @@ export function applySolution(room, pid, moves) {
     spent,
     altWalls: [...(room.wallsAlt ?? [])],
     tiles: (room.tiles ?? []).map((t) => ({ ...t })),
+    minRobots: room.config.hardMode ? MIN_HARD_ROBOTS : 0,
   });
   if (!v.ok) return { type: 'rejected', reason: v.reason };
   const n = v.moves;

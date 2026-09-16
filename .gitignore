@@ -3,3 +3,6 @@ dist/
 .openchamber/
 *.log
 .DS_Store
+.env
+.env.local
+.env.*.local

@@ -3,9 +3,14 @@
 #   Build: npm ci && npm run build | Start: npm start  (PORT is auto-provided).
 services:
   - type: web
-    name: rrbg-rooms
+    name: rrbg
     runtime: node
     plan: free
     buildCommand: npm ci && npm run build
     startCommand: npm start
-    healthCheckPath: /
+    healthCheckPath: /api/health
+    envVars:
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false

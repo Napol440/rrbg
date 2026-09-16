@@ -1206,17 +1206,36 @@ test('covering one target collects it; round ends when all collected', () => {
   assert.deepEqual(s.race.bestMoves, 1.5); // red 1 + silver 0.5
 });
 
-test('undo keeps collected goals; reset clears them', () => {
+test('undo un-collects the undone move (no free targets); reset clears', () => {
   let s = craftMulti();
-  s = move(s, 'r0', 'right');
+  s = move(s, 'r0', 'right'); // covers t0
   assert.deepEqual(s.sandboxes.p0.collected, ['t0']);
-  s = gameReducer(s, { type: 'UNDO' }); // robot leaves, token stays gone
-  assert.deepEqual(s.sandboxes.p0.collected, ['t0']);
+  s = gameReducer(s, { type: 'UNDO' }); // covering move gone → un-collected
+  assert.deepEqual(s.sandboxes.p0.collected, []);
   assert.equal(s.sandboxes.p0.movesUsed, 0);
+  // Re-cover both, then undo only the last: first stays collected.
   s = move(s, 'r0', 'right');
+  s = move(s, 'r1', 'down');
+  assert.deepEqual(s.sandboxes.p0.collected, ['t0', 't1']);
+  s = gameReducer(s, { type: 'UNDO' });
+  assert.deepEqual(s.sandboxes.p0.collected, ['t0']);
   s = gameReducer(s, { type: 'RESET' });
   assert.deepEqual(s.sandboxes.p0.collected, []);
   assert.equal(s.sandboxes.p0.movesUsed, 0);
+});
+
+test('cover-undo-cover cannot farm a cheap solve', () => {
+  // The exploit: cover t0 (1 move), undo (0 moves, kept t0), repeat for t1.
+  // Fixed: after undo the token is back, so the line must actually do it.
+  let s = craftMulti();
+  s = move(s, 'r0', 'right');
+  s = gameReducer(s, { type: 'UNDO' });
+  assert.equal(s.phase, 'thinking'); // not solved — nothing is collected
+  assert.deepEqual(s.sandboxes.p0.collected, []);
+  s = move(s, 'r0', 'right');
+  s = move(s, 'r1', 'down');
+  assert.equal(s.phase, 'race'); // genuine line completes (red 1 + silver 0.5)
+  assert.deepEqual(s.race.bestMoves, 1.5);
 });
 
 test('passing through counts as a touch in multi, not in solo', () => {
@@ -1288,4 +1307,100 @@ test('findDeal hands solver terrain from tiles', () => {
   );
   assert.ok(gotOpts.ice instanceof Set);
   assert.ok(gotOpts.ice.has('1,1'));
+});
+
+// ─── hard mode: 3+ distinct rockets to win ───
+
+function craftHard() {
+  // Red home in 1 (wall stop), plus room to wiggle two more rockets.
+  const walls = new Set(['6,2:W']);
+  const robots = [
+    { id: 'r0', color: 'red', x: 0, y: 2, dir: 'up' },
+    { id: 'r1', color: 'silver', x: 10, y: 10, dir: 'up' },
+    { id: 'r2', color: 'green', x: 0, y: 0, dir: 'up' },
+  ];
+  const s = craftState(null);
+  const box = () => ({ robots: robots.map((r) => ({ ...r })), movesUsed: 0, history: [], collected: [], tiles: [], flips: 0 });
+  return {
+    ...s, hardMode: true, walls, targets: [TARGET], deck: [0], deckPos: 0,
+    startRobots: robots.map((r) => ({ ...r })),
+    sandboxes: { p0: box(), p1: box() },
+  };
+}
+
+test('hard mode blocks sub-3-rocket solves, passes 3-rocket lines', () => {
+  let s = craftHard();
+  s = move(s, 'r1', 'down');
+  s = move(s, 'r1', 'up');
+  s = move(s, 'r0', 'right'); // red home, but only 2 rockets moved
+  assert.equal(s.phase, 'thinking'); // no race — doesn't count
+  assert.equal(s.roster.p0.solved, false);
+  s = move(s, 'r2', 'down'); // third rocket joins while red sits home
+  assert.equal(s.phase, 'race');
+  assert.deepEqual([s.race.leaderId, s.race.bestMoves], ['p0', 3]); // 0.5+0.5+1+1
+});
+
+test('hard mode setting flows through lobby and round', () => {
+  let s = gameReducer(initialState(), {
+    type: 'NET_LOBBY', code: 'ABCD', you: 'p0', isHost: true, hostId: 'p0',
+    players: [{ id: 'p0', name: 'Ada' }],
+    roundsTotal: 10, robotCount: 4, raceSeconds: 30, chaos: false, hardMode: true,
+  });
+  assert.equal(s.hardMode, true);
+  s = gameReducer({ ...s, players: [{ id: 'p0', name: 'Ada' }] }, {
+    type: 'NET_ROUND', round: 1, roundsTotal: 10, walls: [], targets: [],
+    deck: [], deckPos: 0, startRobots: [], par: null, scores: {}, players: [{ id: 'p0', name: 'Ada' }],
+  });
+  assert.equal(s.hardMode, true); // server re-sends each round
+});
+
+test('server rejects too-few-rockets lines in hard rooms', () => {
+  const room = createRoom('Ada', { hardMode: true });
+  assert.equal(room.config.hardMode, true);
+  room.walls = new Set(['6,2:W']);
+  room.targets = [TARGET];
+  room.deck = [0];
+  room.deckPos = 0;
+  room.startRobots = [
+    { id: 'r0', color: 'red', x: 0, y: 2, dir: 'up' },
+    { id: 'r1', color: 'silver', x: 10, y: 10, dir: 'up' },
+  ];
+  room.robotTemplate = room.startRobots.map((r) => ({ ...r }));
+  room.round = 1;
+  room.phase = 'thinking';
+  room.par = null;
+  room.presence = { p0: { movesUsed: 0, solved: false, best: null, givenUp: false, powers: { breach: false, block: false } } };
+  const short = applySolution(room, 'p0', [{ robotId: 'r0', dir: 'right' }]);
+  assert.equal(short.type, 'rejected');
+  assert.equal(short.reason, 'too-few-rockets');
+});
+
+test('findDeal hard mode deals constrained pars', () => {
+  // Real constrained solver (no stub): 3-robot crew, wall-stop home.
+  // Plain solver would say 1; constrained must say 3 (one move per rocket).
+  const r = findDeal(
+    {
+      walls: new Set(['6,2:W']),
+      targets: [TARGET],
+      deck: [0],
+      deckPos: 0,
+      targetCount: 1,
+      robotKinds: [
+        { id: 'r0', color: 'red', x: 0, y: 0, dir: 'up' },
+        { id: 'r1', color: 'silver', x: 0, y: 0, dir: 'up' },
+        { id: 'r2', color: 'green', x: 0, y: 0, dir: 'up' },
+      ],
+      hardMode: true,
+    },
+    {
+      scatter: () => [
+        { id: 'r0', color: 'red', x: 0, y: 2, dir: 'up' },
+        { id: 'r1', color: 'silver', x: 10, y: 10, dir: 'up' },
+        { id: 'r2', color: 'green', x: 0, y: 0, dir: 'up' },
+      ],
+      maxScatters: 1,
+    },
+  );
+  assert.equal(r.par, 3);
+  assert.equal(r.deckPos, 0);
 });

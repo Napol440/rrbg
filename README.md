@@ -50,6 +50,7 @@ Notes: free Render sleeps after inactivity — the first Create/Join can take ~3
 - Rockets slide until a wall, the board edge, the walled 2×2 core, or another robot. Zero-displacement slides are rejected (except yellow's retreat and blue's ram-phase, below).
 - Rocket powers (red/green once per player per round, +1 move): **red** rams adjacent walls to breach them · **blue** phases through one rammed wall/robot per slide, then keeps sliding · **green** rams to drop a 1×1 block on the cell behind itself · **yellow** slides normally, except ramming an adjacent wall moves it one tile back instead of being illegal · **silver** has no power but each of its moves costs only 0.5. Undo pops powers back; first breach/block voids optimal for the round.
 - U undo · R reset · G give up.
+- **Hard mode** (solo checkbox / host lobby toggle): only lines using **3+ distinct rockets** count — covering the target with fewer doesn't trigger the race or submit. Deals use a constrained solver so par already means "3+ rockets", and short lines are rejected server-side as `too-few-rockets`.
 
 ## Power tiles (temporarily shelved)
 

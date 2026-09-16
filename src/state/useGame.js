@@ -12,7 +12,7 @@
 
 import { useMemo, useReducer } from 'react';
 import { buildBoard, placeRobots, makeDeck, pickActiveTargets, scatterRobots, generateTiles, POWER_TILES_ENABLED } from '../game/board.js';
-import { slide, isMultiSolved, collectionComplete, solvePath, adjacentWallKey, behindCell, deriveBoard, chargesUsed, inBounds, isCenterCell, terrainOpts, moveCost } from '../game/engine.js';
+import { slide, isMultiSolved, collectionComplete, solvePath, adjacentWallKey, behindCell, deriveBoard, chargesUsed, inBounds, isCenterCell, terrainOpts, moveCost, distinctRobots, MIN_HARD_ROBOTS } from '../game/engine.js';
 import { RACE_SECONDS, isOptimalSolve, findDeal, cleanMove } from '../game/race.js';
 
 const PLAYER_PALETTE = ['#e5484d', '#3e8ef7', '#46a758', '#f5a524', '#8e4ec6', '#12a594'];
@@ -36,14 +36,26 @@ function sandboxOf(robots, tiles = []) {
   };
 }
 
-// World-progress carried across position-only updates (undo/cancel keep
-// collected goals, tile flips and charges; only RESET starts over).
+// World-progress carried across position-only updates (tile flips survive
+// undo/cancel; only RESET starts over). Collected goals are NOT carried —
+// each move records what IT touched, and collection is the union over
+// history, so undoing the covering move un-collects (no free targets).
 function keepWorld(box) {
   return {
-    collected: box.collected ?? [],
     tiles: (box.tiles ?? []).map((t) => ({ ...t })),
     flips: box.flips ?? 0,
   };
+}
+
+// Union of target ids touched by the moves still in history.
+function unionCollected(history) {
+  const out = [];
+  for (const h of history ?? []) {
+    for (const id of h.touched ?? []) {
+      if (!out.includes(id)) out.push(id);
+    }
+  }
+  return out;
 }
 
 // Active wall base for a sandbox: yellow set while ANY switch tile is
@@ -69,6 +81,7 @@ export function initialState() {
     deck: [],
     deckPos: 0,
     targetCount: 1, // active targets per round (1–3); >1 disables par/answer
+    hardMode: false, // win requires 3+ distinct rockets in the line
     round: 0,
     startRobots: [],
     sandboxes: {}, // playerId -> {robots, movesUsed, history:[{robotId,dir,prev}]}
@@ -105,6 +118,7 @@ function dealTarget(state) {
       targetCount: state.targetCount ?? 1,
       robotKinds: kinds,
       terrain,
+      hardMode: !!state.hardMode,
     },
     { scatter: (ks) => scatterRobots(ks.map((k) => ({ ...k })), state.targets, tileCells) },
   );
@@ -124,7 +138,7 @@ function applyRam(s, pid, box, bot, dir, key) {
   const movesUsed = box.movesUsed + 1;
   let history;
   if (bot.color === 'red') {
-    history = [...box.history, { kind: 'breach', robotId: bot.id, wallKey: key, prev }];
+    history = [...box.history, { kind: 'breach', robotId: bot.id, wallKey: key, prev, touched: [] }];
   } else {
     const c = behindCell(bot.x, bot.y, dir);
     const taken = new Set(box.robots.map((q) => `${q.x},${q.y}`));
@@ -134,7 +148,7 @@ function applyRam(s, pid, box, bot, dir, key) {
     if (!inBounds(c.x, c.y) || isCenterCell(c.x, c.y) || taken.has(`${c.x},${c.y}`) || goals.has(`${c.x},${c.y}`) || blocks.has(`${c.x},${c.y}`) || tiled.has(`${c.x},${c.y}`)) {
       return { ...s, illegal: { robotId: bot.id, n: (s.illegal?.n ?? 0) + 1 } };
     }
-    history = [...box.history, { kind: 'block', robotId: bot.id, wallKey: key, x: c.x, y: c.y, prev }];
+    history = [...box.history, { kind: 'block', robotId: bot.id, wallKey: key, x: c.x, y: c.y, prev, touched: [] }];
   }
   const sandboxes = { ...s.sandboxes, [pid]: { robots: prev, movesUsed, history, ...keepWorld(box) } };
   const roster = {
@@ -172,6 +186,7 @@ export function gameReducer(s, a) {
         pointsToWin: a.pointsToWin,
         raceSeconds: clampRaceSeconds(a.raceSeconds),
         targetCount: clampTargetCount(a.targetCount),
+        hardMode: !!a.hardMode,
         robotCount: a.robotCount,
         walls: board.walls,
         wallsAlt: board.wallsAlt,
@@ -222,7 +237,7 @@ export function gameReducer(s, a) {
         if (before && before.x === r.x && before.y === r.y) {
           const history = box.history.slice(0, -1);
           const movesUsed = Math.max(0, box.movesUsed - moveCost(bot.color));
-          const sandboxes = { ...s.sandboxes, [pid]: { robots: lastEntry.prev, movesUsed, history, ...keepWorld(box) } };
+          const sandboxes = { ...s.sandboxes, [pid]: { robots: lastEntry.prev, movesUsed, history, collected: unionCollected(history), ...keepWorld(box) } };
           const roster = {
             ...s.roster,
             [pid]: { ...s.roster[pid], movesUsed, solved: false },
@@ -231,8 +246,14 @@ export function gameReducer(s, a) {
         }
       }
       const movesUsed = box.movesUsed + moveCost(bot.color);
-      // Store compact replay (kind + undo snapshot).
-      const history = [...box.history, { kind: 'slide', robotId: a.robotId, dir: a.dir, prev }];
+      // Store compact replay (kind + undo snapshot). Each slide records the
+      // goals IT touched so undo can honestly un-collect them (no free moves).
+      const act = activeTargets(s);
+      const trailCells = new Set((r.trail ?? []).map((c) => `${c.x},${c.y}`));
+      const touched = act.length > 1
+        ? act.filter((t) => t.color === bot.color && trailCells.has(`${t.x},${t.y}`)).map((t) => t.id)
+        : [];
+      const history = [...box.history, { kind: 'slide', robotId: a.robotId, dir: a.dir, prev, touched }];
       // Landing on a white/yellow switch tile flips it and swaps the wall
       // set for this sandbox (cumulative world progress, like collected).
       // Flips void par — the solver never sees them.
@@ -246,19 +267,10 @@ export function gameReducer(s, a) {
         flips += 1;
         par = null;
       }
-      // Multi-target: touching a goal collects it (cumulative — stays
-      // collected even if the robot later slides away). The round ends when
+      // Multi-target: collection is the union over history — a goal counts
+      // only while a covering move remains un-undone. The round ends when
       // every active target has been touched at least once.
-      const act = activeTargets(s);
-      let collected = box.collected ?? [];
-      if (act.length > 1) {
-        // Touch collection: any traversed cell (not just the stop) counts.
-        const trail = new Set((r.trail ?? []).map((c) => `${c.x},${c.y}`));
-        const newly = act
-          .filter((t) => !collected.includes(t.id) && t.color === bot.color && trail.has(`${t.x},${t.y}`))
-          .map((t) => t.id);
-        if (newly.length) collected = [...collected, ...newly];
-      }
+      const collected = unionCollected(history);
       const sandboxes = { ...s.sandboxes, [pid]: { robots, movesUsed, history, collected, tiles, flips } };
       const roster = {
         ...s.roster,
@@ -267,6 +279,8 @@ export function gameReducer(s, a) {
       const st = { ...s, sandboxes, roster, par };
       const solved = act.length > 1 ? collectionComplete(collected, act) : isMultiSolved(robots, act);
       if (!solved) return st;
+      // Hard mode: a solved board doesn't count unless 3+ rockets moved.
+      if (st.hardMode && distinctRobots(history).length < MIN_HARD_ROBOTS) return st;
       return onSandboxSolved(st, pid, movesUsed);
     }
     case 'UNDO': {
@@ -277,15 +291,17 @@ export function gameReducer(s, a) {
       const history = [...box.history];
       const last = history.pop();
       // Refund what the undone entry cost: slides pay the mover's color
-      // rate (silver 0.5), ram powers always cost 1.
+      // rate (silver 0.5), ram powers always cost 1. Collection recomputes
+      // from what remains — undoing the covering move un-collects it.
       const refund = last.kind === 'slide'
         ? moveCost(box.robots.find((q) => q.id === last.robotId)?.color)
         : 1;
       const sandboxes = {
         ...s.sandboxes,
-        // World progress (goals, tile flips, charges) survives undo — it is
-        // cumulative per round; only RESET starts over.
-        [pid]: { robots: last.prev, movesUsed: Math.max(0, box.movesUsed - refund), history, ...keepWorld(box) },
+        // Tile flips survive undo (cumulative world progress); only RESET
+        // starts over. Collection does NOT survive: it is the union over
+        // remaining history.
+        [pid]: { robots: last.prev, movesUsed: Math.max(0, box.movesUsed - refund), history, collected: unionCollected(history), ...keepWorld(box) },
       };
       const roster = {
         ...s.roster,
@@ -373,6 +389,7 @@ export function gameReducer(s, a) {
         roundsTotal: a.roundsTotal,
         robotCount: a.robotCount,
         targetCount: clampTargetCount(a.targetCount),
+        hardMode: !!a.hardMode,
         raceSeconds: clampRaceSeconds(a.raceSeconds),
         chaos: !!a.chaos,
       };
@@ -391,6 +408,7 @@ export function gameReducer(s, a) {
         players,
         roundsTotal: a.roundsTotal ?? s.roundsTotal,
         targetCount: clampTargetCount(a.targetCount ?? s.targetCount),
+        hardMode: a.hardMode ?? s.hardMode ?? false,
         raceSeconds: clampRaceSeconds(a.raceSeconds ?? s.raceSeconds),
         walls: new Set(a.walls),
         wallsAlt: new Set(a.wallsAlt ?? []),

@@ -12,6 +12,7 @@ export default function Lobby({ state, send, onLeave }) {
     roundsTotal: state.roundsTotal ?? 15,
     robotCount: state.robotCount ?? 4,
     targetCount: state.targetCount ?? 1,
+    hardMode: !!state.hardMode,
     chaos: !!state.chaos,
   });
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
@@ -86,11 +87,14 @@ export default function Lobby({ state, send, onLeave }) {
             <label className="check">Random walls
               <input type="checkbox" checked={draft.chaos} onChange={(e) => set('chaos', e.target.checked)} />
             </label>
+            <label className="check" title="Wins require 3+ distinct rockets in the line">Hard mode (3+ rockets)
+              <input type="checkbox" checked={!!draft.hardMode} onChange={(e) => set('hardMode', e.target.checked)} />
+            </label>
           </div>
         ) : (
           <p className="muted">
             ⏱ {state.raceSeconds ?? 60}s race · {state.roundsTotal} rounds · {state.robotCount} robots · {state.targetCount ?? 1} target{(state.targetCount ?? 1) === 1 ? '' : 's'}
-            {state.chaos ? ' · random walls on' : ''}
+            {state.chaos ? ' · random walls on' : ''}{state.hardMode ? ' · HARD (3+ rockets)' : ''}
             <br />Waiting for the host to launch…
           </p>
         )}

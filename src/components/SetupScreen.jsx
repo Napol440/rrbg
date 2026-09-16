@@ -9,6 +9,7 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
   const [pointsToWin, setPointsToWin] = useState(0);
   const [robotCount, setRobotCount] = useState(4);
   const [targetCount, setTargetCount] = useState(1);
+  const [hardMode, setHardMode] = useState(false);
   const [chaos, setChaos] = useState(false);
   const [netName, setNetName] = useState('');
   const [joinCode, setJoinCode] = useState('');
@@ -20,6 +21,7 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
       pointsToWin,
       robotCount,
       targetCount,
+      hardMode,
       chaos,
     });
   };
@@ -59,6 +61,9 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
             <label className="check">Chaos walls
               <input type="checkbox" checked={chaos} onChange={(e) => setChaos(e.target.checked)} />
             </label>
+            <label className="check" title="Wins require 3+ distinct rockets in the line">Hard mode (3+ rockets)
+              <input type="checkbox" checked={hardMode} onChange={(e) => setHardMode(e.target.checked)} />
+            </label>
           </div>
           <button className="hud-btn primary" onClick={startSolo}>Launch solo</button>
         </section>
@@ -71,6 +76,7 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
           <li>First solve starts the race clock — everyone sees the move count.</li>
           <li>A <b>smaller</b> solve restarts the clock and steals the lead. A provably <b>optimal</b> solve (≤ par) wins instantly.</li>
           <li>Lowest-move solver scores the target. Most targets (or first to X) wins.</li>
+          <li>Hard mode: only lines using 3+ distinct rockets count.</li>
         </ol>
       </details>
 
@@ -83,7 +89,7 @@ export default function SetupScreen({ onStart, onCreate, onJoin }) {
             <input value={netName} onChange={(e) => setNetName(e.target.value)} maxLength={12} placeholder="Ada" />
           </label>
           <div className="cbtns">
-            <button className="hud-btn primary" onClick={() => onCreate?.({ name: netName.trim() || 'Host', cfg: { roundsTotal, pointsToWin, robotCount, targetCount, chaos, raceSeconds: 60 } })}>
+            <button className="hud-btn primary" onClick={() => onCreate?.({ name: netName.trim() || 'Host', cfg: { roundsTotal, pointsToWin, robotCount, targetCount, hardMode, chaos, raceSeconds: 60 } })}>
               Create room
             </button>
           </div>

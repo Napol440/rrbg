@@ -2,7 +2,7 @@
 // zero-displacement slides. Run with: npm test  (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { slide, legalMoves, solveMinMoves, adjacentWallKey, deriveBoard, chargesUsed, terrainOpts, moveCost } from '../src/game/engine.js';
+import { slide, legalMoves, solveMinMoves, adjacentWallKey, deriveBoard, chargesUsed, terrainOpts, moveCost, distinctRobots, solveConstrainedMinMoves, MIN_HARD_ROBOTS } from '../src/game/engine.js';
 
 const noWalls = new Set();
 const bots = (list) => list.map(([id, x, y], i) => ({ id, x, y, color: ['red', 'blue'][i] ?? 'red' }));
@@ -236,4 +236,45 @@ test('solver rides warps and brakes on ice', () => {
   assert.equal(solveMinMoves(noWalls, robots, { x: 15, y: 7, color: 'red' }, 9, 120000, t), 1);
   const ice = terrainOpts([{ id: 'i0', kind: 'ice', x: 5, y: 0 }]);
   assert.equal(solveMinMoves(noWalls, robots, { x: 5, y: 0, color: 'red' }, 9, 120000, ice), 1);
+});
+
+// ─── hard mode: distinct rockets ───
+
+test('distinctRobots counts movers once each (rams count)', () => {
+  assert.equal(MIN_HARD_ROBOTS, 3);
+  assert.deepEqual(distinctRobots([
+    { kind: 'slide', robotId: 'r0', dir: 'right' },
+    { kind: 'slide', robotId: 'r0', dir: 'up' },
+    { kind: 'breach', robotId: 'r1', wallKey: '1,1:N' },
+  ]), ['r0', 'r1']);
+  assert.deepEqual(distinctRobots([]), []);
+  assert.deepEqual(distinctRobots([{ dir: 'right' }]), []);
+});
+
+test('constrained solver demands 3+ rockets in the line', () => {
+  // 1-move wall setup, single robot present: impossible under the constraint.
+  const walls = new Set(['6,2:W']);
+  const solo = [{ id: 'r0', color: 'red', x: 0, y: 2 }];
+  const target = { x: 5, y: 2, color: 'red' };
+  assert.equal(solveMinMoves(walls, solo, target), 1);
+  assert.equal(solveConstrainedMinMoves(walls, solo, target, 3), null);
+  // Open board: 2-move solve exists, but the 3-rocket minimum costs a move.
+  const crew = [
+    { id: 'r0', color: 'red', x: 0, y: 0 },
+    { id: 'r1', color: 'blue', x: 5, y: 5 },
+  ];
+  assert.equal(solveMinMoves(noWalls, crew, { x: 15, y: 15, color: 'red' }), 2);
+  assert.equal(solveConstrainedMinMoves(noWalls, crew, { x: 15, y: 15, color: 'red' }, 3), null);
+  // 2-robot minimum still costs a move: r1 wiggle + the 2-move solve.
+  assert.equal(solveConstrainedMinMoves(noWalls, crew, { x: 15, y: 15, color: 'red' }, 2), 3);
+});
+
+test('constrained solver finds the cheapest 3-rocket line', () => {
+  const crew = [
+    { id: 'r0', color: 'red', x: 0, y: 0 },
+    { id: 'r1', color: 'blue', x: 5, y: 5 },
+    { id: 'r2', color: 'green', x: 9, y: 9 },
+  ];
+  // Wasteful r1/r2 wiggles + the 2-move solve = 4 with all three involved.
+  assert.equal(solveConstrainedMinMoves(noWalls, crew, { x: 15, y: 15, color: 'red' }, 3), 4);
 });

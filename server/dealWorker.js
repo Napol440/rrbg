@@ -22,6 +22,7 @@ parentPort.on('message', (job) => {
         targetCount: job.targetCount ?? 1,
         robotKinds: job.robotKinds ?? [],
         terrain: terrainOpts(tiles),
+        hardMode: !!job.hardMode,
       },
       { scatter: (ks) => scatterRobots(ks.map((k) => ({ ...k })), targets, tileCells) },
     );

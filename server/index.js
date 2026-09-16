@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer } from 'ws';
 import {
-  createRoom, joinRoom, startGame, startGamePredealt, setupBoard, roundPayload,
+  createRoom, joinRoom, joinInstanceRoom, startGame, startGamePredealt, setupBoard, roundPayload,
   removePlayer, updateConfig,
   applyCount, applySolution, applyGiveUp, tickRoom, nextRound, nextRoundPredealt,
 } from './rooms.js';
@@ -21,6 +21,7 @@ const DIST = path.join(ROOT, 'dist');
 const PORT = Number(process.env.PORT ?? 8787);
 
 const rooms = new Map(); // code -> room
+const roomsByInstance = new Map(); // discord instanceId -> room
 
 // Background map builder: one shared worker pre-solves each room's NEXT
 // round while the current one is played. Stale results are discarded via
@@ -52,6 +53,7 @@ function queueNextDeal(room) {
     deck: room.deck,
     deckPos: room.deckPos + (room.config.targetCount ?? 1),
     targetCount: room.config.targetCount ?? 1,
+    hardMode: !!room.config.hardMode,
     robotKinds: room.robotTemplate.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' })),
   });
 }
@@ -59,12 +61,24 @@ function queueNextDeal(room) {
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
+  let urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  // Discord proxy: `/.proxy/api/token` arrives either stripped (/api/token)
+  // or intact (/.proxy/api/token) depending on mapping — normalize both.
+  const apiPath = urlPath.startsWith('/.proxy/') ? urlPath.slice('/.proxy'.length) : urlPath;
+  if (apiPath === '/api/token' && req.method === 'POST') {
+    handleTokenExchange(req, res);
+    return;
+  }
+  if (apiPath === '/api/health') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+    return;
+  }
   if (!fs.existsSync(DIST)) {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('rooms server up (no dist/ built yet — run npm run build to serve the app)');
     return;
   }
-  let urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   // Support Vite base '/rrbg/'.
   if (urlPath.startsWith('/rrbg/')) urlPath = urlPath.slice('/rrbg'.length) || '/';
   let file = path.join(DIST, urlPath === '/' ? 'index.html' : urlPath.slice(1));
@@ -79,10 +93,48 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
+// Discord OAuth2 code → access_token exchange. Keeps CLIENT_SECRET server-side.
+// Env: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET.
+function handleTokenExchange(req, res) {
+  let body = '';
+  req.on('data', (c) => {
+    body += c;
+    if (body.length > 8192) req.destroy();
+  });
+  req.on('end', async () => {
+    try {
+      const { code } = JSON.parse(body || '{}');
+      if (!code) throw new Error('missing code');
+      const clientId = process.env.DISCORD_CLIENT_ID ?? process.env.VITE_DISCORD_CLIENT_ID;
+      const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+      if (!clientId || !clientSecret) throw new Error('server missing DISCORD_CLIENT_ID/SECRET');
+      const params = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'authorization_code',
+        code: String(code),
+      });
+      const r = await fetch('https://discord.com/api/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error_description ?? 'discord token exchange failed');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ access_token: data.access_token }));
+    } catch (err) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err?.message ?? err) }));
+    }
+  });
+}
+
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const pathname = new URL(req.url, 'http://x').pathname;
-  if (pathname !== '/ws') {
+  // Standalone: /ws. Discord proxy: /.proxy/ws (or stripped variants).
+  if (!(pathname === '/ws' || pathname === '/.proxy/ws' || pathname.endsWith('/ws'))) {
     socket.destroy();
     return;
   }
@@ -131,6 +183,36 @@ function handle(ws, m) {
       }
       break;
     }
+    case 'JOIN_INSTANCE': {
+      // Discord Activity: everyone in the same channel instance shares a room.
+      const instanceId = String(m.instanceId ?? '').slice(0, 64);
+      if (!instanceId) return send(ws, { t: 'ERROR', message: 'Missing Discord instance.' });
+      let room = roomsByInstance.get(instanceId);
+      if (!room) {
+        room = createRoom(m.user?.username ?? m.name, { ...(m.cfg ?? {}), instanceId, discordId: m.user?.id ?? null, avatar: m.user?.avatar ?? null });
+        rooms.set(room.code, room);
+        roomsByInstance.set(instanceId, room);
+        attach(ws, room, room.hostId);
+        setupBoard(room);
+        send(ws, welcome(room, room.hostId));
+        queueNextDeal(room);
+      } else {
+        const r = joinInstanceRoom(room, {
+          discordId: m.user?.id ?? null,
+          name: m.user?.username ?? m.name,
+          avatar: m.user?.avatar ?? null,
+        });
+        if (r.error) return send(ws, { t: 'ERROR', message: r.error });
+        attach(ws, room, r.player.id);
+        send(ws, welcome(room, r.player.id));
+        broadcast(room, lobbyPayload(room));
+        if (room.phase === 'thinking' || room.phase === 'race') {
+          send(ws, roundPayload(room));
+          if (room.race) send(ws, { t: 'RACE', ...room.race });
+        }
+      }
+      break;
+    }
     case 'START': {
       const room = rooms.get(ws.roomCode);
       if (!room || ws.playerId !== room.hostId || room.phase !== 'lobby') return;
@@ -174,7 +256,7 @@ function handle(ws, m) {
       if (!target || m.playerId === room.hostId) return;
       send(target, { t: 'KICKED' });
       try { target.close(); } catch { /* already gone */ }
-      if (removePlayer(room, m.playerId)) rooms.delete(room.code);
+      if (removePlayer(room, m.playerId)) dropRoom(room);
       else broadcast(room, lobbyPayload(room));
       break;
     }
@@ -219,13 +301,18 @@ function send(ws, msg) {
   if (ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
+function dropRoom(room) {
+  rooms.delete(room.code);
+  if (room.instanceId) roomsByInstance.delete(room.instanceId);
+}
+
 function leaveRoom(ws) {
   const room = rooms.get(ws.roomCode);
   if (!room) return;
   // Already removed (e.g. kicked) → nothing to do.
   if (!room.conns.has(ws.playerId) && !room.players.some((p) => p.id === ws.playerId)) return;
   if (removePlayer(room, ws.playerId)) {
-    rooms.delete(room.code);
+    dropRoom(room);
     return;
   }
   if (room.phase === 'lobby') broadcast(room, lobbyPayload(room));
@@ -251,6 +338,7 @@ function lobbyFields(room) {
     roundsTotal: room.config.roundsTotal,
     robotCount: room.config.robotCount,
     targetCount: room.config.targetCount ?? 1,
+    hardMode: !!room.config.hardMode,
     raceSeconds: room.config.raceSeconds,
     chaos: room.config.chaos,
     arenaReady: room.phase !== 'lobby' || !!room._pendingDeal,

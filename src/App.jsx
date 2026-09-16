@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGame, activeTargets, playerColor, visibleRobots } from './state/useGame.js';
-import { isMultiSolved, collectionComplete } from './game/engine.js';
+import { isMultiSolved, collectionComplete, distinctRobots, MIN_HARD_ROBOTS } from './game/engine.js';
 import { previewPath, cleanMove } from './game/race.js';
 import SetupScreen from './components/SetupScreen.jsx';
 import Lobby from './components/Lobby.jsx';
@@ -57,6 +57,7 @@ export default function App() {
       deck: state.deck,
       deckPos: state.deckPos + (state.targetCount ?? 1),
       targetCount: state.targetCount ?? 1,
+      hardMode: !!state.hardMode,
       tiles: (state.roundTiles ?? []).map((t) => ({ ...t })),
       robotKinds: state.startRobots.map(({ id, color }) => ({ id, color, x: 0, y: 0, dir: 'up' })),
     });
@@ -108,7 +109,8 @@ export default function App() {
     const done = targets.length > 1
       ? collectionComplete(box.collected, targets)
       : isMultiSolved(box.robots, targets);
-    if (done) {
+    // Hard mode: don't submit lines using fewer than 3 rockets.
+    if (done && !(state.hardMode && distinctRobots(box.history).length < MIN_HARD_ROBOTS)) {
       send({ t: 'SOLUTION', moves: box.history.map(cleanMove) });
       dispatch({ type: 'NET_SENT', moves: box.movesUsed });
     }
@@ -148,22 +150,68 @@ export default function App() {
 
   useEffect(() => () => wsRef.current?.close(), []);
 
-  const connect = useCallback((firstMsg, onErr) => {
+  const connect = useCallback((firstMsg, onErr, wsUrlOverride) => {
     try {
-      const ws = new WebSocket(roomWsUrl());
+      const url = wsUrlOverride ?? roomWsUrl();
+      const ws = new WebSocket(url);
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         let m;
         try { m = JSON.parse(ev.data); } catch { return; }
         routeServerMessage(m, dispatch, setNetError, () => wsRef.current?.close());
       };
-      ws.onerror = () => { onErr?.(); setNetError(`Could not reach ${roomWsUrl()}. Is the rooms server running? (npm run server, keep it open)`); };
+      ws.onerror = () => { onErr?.(); setNetError(`Could not reach ${url}. Is the rooms server running? (npm run server, keep it open)`); };
       ws.onclose = () => dispatch({ type: 'NET_CLOSE' });
       ws.onopen = () => ws.send(JSON.stringify(firstMsg));
     } catch {
       onErr?.();
     }
   }, [dispatch]);
+
+  // Discord Activity auto-join: framed + VITE_DISCORD_CLIENT_ID → handshake
+  // (ready/authorize/token/authenticate), then JOIN_INSTANCE with the channel
+  // instanceId. Everyone in the same Discord session lands in one room.
+  // Any failure falls back to the normal web setup screen.
+  const [discordState, setDiscordState] = useState('checking'); // checking|active|web
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let mod;
+      try {
+        mod = await import('./discord/sdk.js');
+      } catch {
+        if (!cancelled) setDiscordState('web');
+        return;
+      }
+      if (!mod.shouldUseDiscord()) {
+        if (!cancelled) setDiscordState('web');
+        return;
+      }
+      try {
+        const { handshakeDiscord, discordWsUrl } = mod;
+        const { context } = await handshakeDiscord();
+        if (cancelled) return;
+        setDiscordState('active');
+        const username = context.user?.username ?? context.user?.global_name ?? 'Pilot';
+        connect(
+          {
+            t: 'JOIN_INSTANCE',
+            instanceId: context.instanceId,
+            user: { id: context.user?.id ?? null, username, avatar: context.user?.avatar ?? null },
+            cfg: { roundsTotal: 15, robotCount: 4, targetCount: 1, raceSeconds: 60 },
+          },
+          () => { if (!cancelled) setDiscordState('web'); },
+          discordWsUrl(),
+        );
+      } catch (e) {
+        if (!cancelled) {
+          setDiscordState('web');
+          setNetError(`Discord join failed (${e?.message ?? e}) — you can still play via rooms below.`);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connect]);
 
   const play = useCallback(
     (dir) => {
@@ -236,9 +284,17 @@ export default function App() {
   }, [state.phase, play, robots, giveUp, dispatch]);
 
   if (state.phase === 'setup' && state.mode === 'local') {
+    if (discordState === 'checking' && import.meta.env?.VITE_DISCORD_CLIENT_ID) {
+      return (
+        <div className="wrap narrow">
+          <div className="setup"><h1>Rocket Rebound</h1><p className="muted">Connecting to Discord…</p></div>
+        </div>
+      );
+    }
     return (
       <div className="wrap narrow">
         {netError && <p className="neterr">{netError}</p>}
+        {discordState === 'active' && <p className="muted">Joined via Discord — waiting for room…</p>}
         <SetupScreen
           onStart={(cfg) => dispatch({ type: 'START', ...cfg })}
           onCreate={({ name, cfg }) => connect({ t: 'CREATE', name, cfg })}
@@ -331,10 +387,10 @@ export default function App() {
 function routeServerMessage(m, dispatch, setNetError, onKicked) {
   switch (m.t) {
     case 'WELCOME':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, arenaReady: m.arenaReady });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, hardMode: m.hardMode, arenaReady: m.arenaReady });
       break;
     case 'LOBBY':
-      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, arenaReady: m.arenaReady });
+      dispatch({ type: 'NET_LOBBY', code: m.code, you: m.you, isHost: m.isHost, hostId: m.hostId, players: m.players, roundsTotal: m.roundsTotal, robotCount: m.robotCount, raceSeconds: m.raceSeconds, chaos: m.chaos, targetCount: m.targetCount, hardMode: m.hardMode, arenaReady: m.arenaReady });
       break;
     case 'ROUND':
       dispatch({ type: 'NET_ROUND', ...m });

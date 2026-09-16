@@ -313,6 +313,57 @@ export function solveMinMoves(walls, robots, target, maxDepth = 9, maxNodes = 12
   return path ? path.length : null;
 }
 
+/** Hard mode: a solve must use this many distinct rockets to count. */
+export const MIN_HARD_ROBOTS = 3;
+
+/** Distinct robot ids used in a move list (ram entries count — they moved). */
+export function distinctRobots(moves) {
+  return [...new Set((moves ?? []).map((m) => m.robotId).filter(Boolean))];
+}
+
+/**
+ * Fewest moves solving with at least minRobots distinct rockets (hard mode
+ * deal check). Unlike the main solver this one carries colors, so intrinsic
+ * powers (blue/silver phase, yellow retreat) are modeled; ram powers are not
+ * (they void par instead). Null within caps, like the main solver.
+ */
+export function solveConstrainedMinMoves(walls, robots, target, minRobots = 3, maxDepth = 9, maxNodes = 120000, opts = {}) {
+  if (!target) return null;
+  const ids = robots.map((r) => r.id);
+  const colors = robots.map((r) => r.color);
+  const goalIdx = robots.findIndex((r) => r.color === target.color);
+  if (goalIdx === -1) return null;
+  const start = robots.map((r) => ({ x: r.x, y: r.y }));
+  const posKey = (p) => p.map((q) => `${q.x},${q.y}`).join('|');
+  const seen = new Set([`${posKey(start)}|`]);
+  let frontier = [{ pos: start, used: [] }];
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    const next = [];
+    for (const node of frontier) {
+      const { pos, used } = node;
+      const asRobots = ids.map((id, i) => ({ id, color: colors[i], x: pos[i].x, y: pos[i].y }));
+      if (pos[goalIdx].x === target.x && pos[goalIdx].y === target.y && used.length >= minRobots) return depth;
+      if (depth === maxDepth) continue;
+      for (let i = 0; i < ids.length; i++) {
+        for (const dir of Object.keys(DIRS)) {
+          const s = slide(walls, asRobots, ids[i], dir, opts);
+          if (!s.moved) continue;
+          const np = pos.map((p, j) => (j === i ? { x: s.x, y: s.y } : p));
+          const nused = used.includes(ids[i]) ? used : [...used, ids[i]];
+          const key = `${posKey(np)}|${[...nused].sort().join(',')}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (seen.size > maxNodes) return null;
+          next.push({ pos: np, used: nused });
+        }
+      }
+    }
+    frontier = next;
+    if (frontier.length === 0) return null;
+  }
+  return null;
+}
+
 /**
  * Shortest legal move list solving the target, or null within caps.
  * @returns {Array<{robotId:string,dir:string}>|null}

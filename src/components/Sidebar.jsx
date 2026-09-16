@@ -20,7 +20,7 @@ export default function Sidebar({ state, dispatch, send, onNextRound, showPath, 
   return (
     <aside className="side">
       <section className="card target-card">
-        <h2>Round {state.round}/{state.roundsTotal} · Target{multi ? `s — ${collected.size}/${targets.length} collected` : ''}</h2>
+        <h2>Round {state.round}/{state.roundsTotal} · Target{multi ? `s — ${collected.size}/${targets.length} collected` : ''}{state.hardMode ? ' · HARD 3+' : ''}</h2>
         {targets.length ? targets.map((t) => (
           <div key={t.id} className="targetline">
             <span className="swatch" style={{ background: ROBOT_FILL[t.color] }} />

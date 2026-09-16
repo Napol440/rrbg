@@ -6,7 +6,7 @@
 //   - A solve within solver par is provably OPTIMAL → instant win, no wait.
 // Used by both the local reducer and the rooms server (single source of truth).
 
-import { slide, isMultiSolved, solveMinMoves, withoutWalls, inBounds, isCenterCell, terrainOpts, moveCost } from './engine.js';
+import { slide, isMultiSolved, solveMinMoves, withoutWalls, inBounds, isCenterCell, terrainOpts, moveCost, distinctRobots, solveConstrainedMinMoves, MIN_HARD_ROBOTS } from './engine.js';
 import { pickActiveTargets } from './board.js';
 
 export const RACE_SECONDS = 60;
@@ -41,7 +41,9 @@ export function meetsMinPar(par, min = MIN_ROUND_PAR) {
  * A streak of nulls suggests the target itself is sealed → advance the deck.
  * Multi-target rounds skip solving (par always null): single scatter.
  *
- * @param {object} cfg {walls, targets, deck, deckPos, targetCount, robotKinds}
+ * Hard mode deals use the constrained solver instead, so par already means
+ * "solvable with 3+ rockets" and the 6+ gate applies to that number.
+ * @param {object} cfg {walls, targets, deck, deckPos, targetCount, robotKinds, hardMode}
  * @param {object} deps {scatter(kinds)->robots, solver, now, budgetMs,
  *   maxScatters, nullsToSwitch, maxTargets} — injectable for tests.
  * @returns {{robots, par, deckPos}}
@@ -55,17 +57,21 @@ export function findDeal(cfg, deps = {}) {
     targetCount = 1,
     robotKinds = [],
     terrain = null,
+    hardMode = false,
   } = cfg;
   const solverOpts = { ...(terrain ?? {}) };
   const {
     scatter,
-    solver = solveMinMoves,
+    solver,
     now = Date.now,
     budgetMs = 2500,
     maxScatters = MAX_DEAL_ATTEMPTS,
     nullsToSwitch = 8,
     maxTargets = 3,
   } = deps;
+  const solve = solver ?? ((w, r, t, d, n, o) => hardMode
+    ? solveConstrainedMinMoves(w, r, t, MIN_HARD_ROBOTS, d, n, o)
+    : solveMinMoves(w, r, t, d, n, o));
   if (targetCount !== 1 || typeof scatter !== 'function') {
     return { robots: typeof scatter === 'function' ? scatter(robotKinds) : [], par: null, deckPos };
   }
@@ -80,7 +86,7 @@ export function findDeal(cfg, deps = {}) {
     let nulls = 0;
     for (let a = 0; a < maxScatters; a++) {
       const robots = scatter(robotKinds);
-      const par = solver(walls, robots, actives[0], 9, 120000, solverOpts);
+      const par = solve(walls, robots, actives[0], 9, 120000, solverOpts);
       last = { robots, par };
       if (par != null && par >= MIN_ROUND_PAR) return { robots, par, deckPos: pos };
       if (par != null) {
@@ -142,6 +148,8 @@ export function validateSolution(walls, startRobots, target, moves, opts = {}) {
     ? targets.every((t) => replayed.touched.includes(t.id))
     : isMultiSolved(replayed.robots, targets);
   if (!solved) return { ok: false, reason: 'unsolved' };
+  // Hard mode: solved boards using fewer than 3 rockets don't count.
+  if ((opts.minRobots ?? 0) > distinctRobots(moves).length) return { ok: false, reason: 'too-few-rockets' };
   return { ok: true, moves: replayed.moves, flips: replayed.flips };
 }
 
