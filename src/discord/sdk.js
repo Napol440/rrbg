@@ -20,25 +20,37 @@ export function shouldUseDiscord() {
 }
 
 // Backend host the Discord URL-mapping proxy should forward to, e.g.
-// VITE_BACKEND_HOST=rrbg-rooms.onrender.com (no protocol, no path).
+// VITE_BACKEND_HOST=rrbg.onrender.com (no protocol, no path).
 export function backendHost() {
   return import.meta.env?.VITE_BACKEND_HOST ?? window.location.host;
 }
 
 // Token exchange goes through the Discord proxy when framed:
 // Developer Portal mapping should be `/api -> <backend-host>`.
+// Tries `/.proxy/api/token` first, then plain `/api/token` — Discord's
+// proxy has routed both forms in different client versions, and our server
+// answers `/api/token` either way.
 export function apiTokenUrl() {
   if (shouldUseDiscord()) return '/.proxy/api/token';
   return '/api/token';
 }
 
+function apiTokenFallbacks() {
+  if (!shouldUseDiscord()) return ['/api/token'];
+  return ['/.proxy/api/token', '/api/token'];
+}
+
 // Rooms WS: standalone uses roomWsUrl(); Discord uses the mapped proxy path.
-// Portal mapping should include a WS-capable entry covering `/ws`.
+// Uses whichever prefix form the token exchange proved working.
 export function discordWsUrl() {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  if (shouldUseDiscord()) return `${proto}://${window.location.host}/.proxy/ws`;
+  if (shouldUseDiscord()) return `${proto}://${window.location.host}${workingProxyPrefix}/ws`;
   return null;
 }
+
+// Set by postTokenWithFallback: '/.proxy' or '' depending on which form the
+// Discord proxy actually routes to our server.
+let workingProxyPrefix = '/.proxy';
 
 // Full Discord handshake: ready → authorize → server token exchange →
 // authenticate. Returns { sdk, auth, context } where context has
@@ -66,12 +78,7 @@ export async function handshakeDiscord() {
     scope: ['identify'],
   });
 
-  const res = await fetch(apiTokenUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  });
-  if (!res.ok) throw new Error(`token exchange failed (${res.status})`);
+  const res = await postTokenWithFallback(code);
   const { access_token } = await res.json();
   const auth = await sdk.commands.authenticate({ access_token });
   const context = {
@@ -81,4 +88,38 @@ export async function handshakeDiscord() {
     user: auth?.user ?? null,
   };
   return { sdk, auth, context };
+}
+
+// POST the OAuth code to each candidate token URL in turn. A proxy miss
+// returns HTML (or an error status) instead of JSON — skip it and try the
+// next form before giving up with a diagnostic error.
+async function postTokenWithFallback(code) {
+  const tried = [];
+  for (const url of apiTokenFallbacks()) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+    } catch (e) {
+      tried.push(`${url} (network: ${e?.message ?? e})`);
+      continue;
+    }
+    const text = await res.text();
+    try {
+      const data = JSON.parse(text);
+      if (!res.ok || data?.error || !data?.access_token) {
+        tried.push(`${url} (${res.status}: ${String(data?.error ?? text).slice(0, 80)})`);
+        continue;
+      }
+      workingProxyPrefix = url.startsWith('/.proxy') ? '/.proxy' : '';
+      // Re-wrap so callers can keep using res.json().
+      return new Response(JSON.stringify(data), { status: 200 });
+    } catch {
+      tried.push(`${url} (${res.status}: non-JSON: ${text.slice(0, 80)})`);
+    }
+  }
+  throw new Error(`token exchange failed — proxy /api mapping not reaching server [${tried.join(' | ')}]`);
 }
