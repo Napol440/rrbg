@@ -67,6 +67,10 @@ const server = http.createServer((req, res) => {
   // Trailing slashes are tolerated (some proxies normalize them in).
   let apiPath = urlPath.startsWith('/.proxy/') ? urlPath.slice('/.proxy'.length) : urlPath;
   if (apiPath.length > 1 && apiPath.endsWith('/')) apiPath = apiPath.slice(0, -1);
+  // Discord's proxy may forward with the matched mapping prefix stripped
+  // (/.proxy/api/token → /token). Accept both the full and stripped shapes.
+  if (apiPath === '/token') apiPath = '/api/token';
+  else if (apiPath === '/health') apiPath = '/api/health';
   const CORS = {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
@@ -152,7 +156,8 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const pathname = new URL(req.url, 'http://x').pathname;
   // Standalone: /ws. Discord proxy: /.proxy/ws (or stripped variants).
-  if (!(pathname === '/ws' || pathname === '/.proxy/ws' || pathname.endsWith('/ws'))) {
+  // '/' covers a proxy that strips the whole matched /ws prefix.
+  if (!(pathname === '/ws' || pathname === '/' || pathname === '' || pathname === '/.proxy/ws' || pathname.endsWith('/ws'))) {
     socket.destroy();
     return;
   }
