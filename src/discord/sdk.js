@@ -118,7 +118,11 @@ async function postTokenWithFallback(code) {
       // Re-wrap so callers can keep using res.json().
       return new Response(JSON.stringify(data), { status: 200 });
     } catch {
-      tried.push(`${url} (${res.status}: non-JSON: ${text.slice(0, 80)})`);
+      const looksLikeApp = text.includes('Rocket Rebound') || text.includes('id="root"');
+      const hint = looksLikeApp
+        ? 'proxy served the app shell instead of the API — the /api URL mapping is not active on the launched app'
+        : `non-JSON: ${text.slice(0, 80)}`;
+      tried.push(`${url} (${res.status}: ${hint})`);
     }
   }
   throw new Error(`token exchange failed — proxy /api mapping not reaching server [${tried.join(' | ')}]`);
